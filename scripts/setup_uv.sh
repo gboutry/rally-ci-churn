@@ -19,6 +19,7 @@ plugin package, then generates Sunbeam-oriented args and adminrc files.
 
 Supported scenario ids:
   autonomous_vm
+  spiky_autonomous_vm
 EOF
 }
 

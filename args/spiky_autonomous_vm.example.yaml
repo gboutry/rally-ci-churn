@@ -1,0 +1,49 @@
+title: "Rally CI churn"
+description: "Autonomous CI-like runner churn with a spiky arrival schedule"
+
+scenario:
+  family: "autonomous_vm"
+  name: "CIChurn.spiky_autonomous_vm"
+  timeout_seconds: 3600
+  timeout_mode: "fail"
+  console_log_length: 400
+
+schedule:
+  duration_seconds: 300
+  max_active_vms: 10
+  baseline_launches_per_minute: 12
+  launch_tick_seconds: 1
+  burst_windows:
+    - start_second: 30
+      end_second: 60
+      launch_rate_multiplier: 4.0
+    - start_second: 150
+      end_second: 180
+      launch_rate_multiplier: 2.5
+
+cloud:
+  image_name: "ubuntu"
+  flavor_name: "m1.small"
+  external_network_name: "external-network"
+  external_network_id: ""
+
+network:
+  dns_nameservers: []
+
+storage:
+  artifact_container: "rally-ci-churn"
+  artifact_ttl_seconds: 86400
+  swift_auth_url: "https://keystone.example.invalid:5000/v3"
+  swift_username: "benchmark-user"
+  swift_password: "replace-me"
+  swift_project_name: "benchmark-project"
+  swift_user_domain_name: "Default"
+  swift_project_domain_name: "Default"
+  swift_interface: "public"
+  swift_region_name: ""
+  swift_cacert: ""
+  swift_cacert_b64: ""
+
+workload:
+  profile: "synthetic_ci"
+  params: {}

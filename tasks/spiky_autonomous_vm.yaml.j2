@@ -1,0 +1,70 @@
+{% set title = title or "Rally CI churn" %}
+{% set description = description or "Autonomous CI-like runner churn with a spiky arrival schedule" %}
+{% set scenario_cfg = scenario or {} %}
+{% set cloud_cfg = cloud or {} %}
+{% set network_cfg = network or {} %}
+{% set storage_cfg = storage or {} %}
+{% set workload_cfg = workload or {} %}
+{% set schedule_cfg = schedule or {} %}
+---
+version: 2
+title: "{{ title }}"
+description: "{{ description }}"
+tags:
+  - rally
+  - openstack
+  - ci
+  - churn
+  - autonomous
+  - spiky
+subtasks:
+  - title: "Spiky autonomous run"
+    description: "Launch autonomous runners over a bursty time-based schedule"
+    contexts:
+      network@openstack:
+        networks_per_tenant: 1
+        subnets_per_network: 1
+{% if network_cfg.dns_nameservers %}
+        dns_nameservers:
+{% for dns_nameserver in network_cfg.dns_nameservers %}
+          - "{{ dns_nameserver }}"
+{% endfor %}
+{% endif %}
+        router:
+          external_gateway_info:
+            network_id: "{{ cloud_cfg.external_network_id }}"
+    scenario:
+      {{ scenario_cfg.name or "CIChurn.spiky_autonomous_vm" }}:
+        image:
+          name: "{{ cloud_cfg.image_name }}"
+        flavor:
+          name: "{{ cloud_cfg.flavor_name }}"
+        workload_profile: "{{ workload_cfg.profile or 'smoke' }}"
+        workload_params: {{ workload_cfg.params or {} }}
+        artifact_container: "{{ storage_cfg.artifact_container or 'rally-ci-churn' }}"
+        artifact_ttl_seconds: {{ storage_cfg.artifact_ttl_seconds or 0 }}
+        swift_auth_url: "{{ storage_cfg.swift_auth_url }}"
+        swift_username: "{{ storage_cfg.swift_username }}"
+        swift_password: "{{ storage_cfg.swift_password }}"
+        swift_project_name: "{{ storage_cfg.swift_project_name }}"
+        swift_user_domain_name: "{{ storage_cfg.swift_user_domain_name }}"
+        swift_project_domain_name: "{{ storage_cfg.swift_project_domain_name }}"
+        swift_interface: "{{ storage_cfg.swift_interface or 'public' }}"
+        swift_region_name: "{{ storage_cfg.swift_region_name or '' }}"
+        swift_cacert_b64: "{{ storage_cfg.swift_cacert_b64 or '' }}"
+        timeout_seconds: {{ scenario_cfg.timeout_seconds or 3600 }}
+        timeout_mode: "{{ scenario_cfg.timeout_mode or 'fail' }}"
+        console_log_length: {{ scenario_cfg.console_log_length or 400 }}
+        duration_seconds: {{ schedule_cfg.duration_seconds or 300 }}
+        max_active_vms: {{ schedule_cfg.max_active_vms or 10 }}
+        baseline_launches_per_minute: {{ schedule_cfg.baseline_launches_per_minute or 12 }}
+        launch_tick_seconds: {{ schedule_cfg.launch_tick_seconds or 1 }}
+        burst_windows: {{ schedule_cfg.burst_windows or [] }}
+    runner:
+      constant:
+        times: 1
+        concurrency: 1
+        timeout: 86400
+    sla:
+      failure_rate:
+        max: 0

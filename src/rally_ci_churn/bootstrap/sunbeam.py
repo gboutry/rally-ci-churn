@@ -18,6 +18,7 @@ import yaml
 
 
 DEFAULT_SCENARIO = "autonomous_vm"
+SPIKY_SCENARIO = "spiky_autonomous_vm"
 
 
 def _run_openstack(clouds_yaml: Path, cloud_name: str, *args: str) -> str:
@@ -102,7 +103,6 @@ def _select_sunbeam_dns(clouds_yaml: Path) -> list[str]:
 
 def _build_autonomous_vm_args(clouds_yaml: Path, config: dict[str, object]) -> dict[str, object]:
     sunbeam = config["clouds"]["sunbeam"]
-    sunbeam_admin = config["clouds"]["sunbeam-admin"]
     image_names = _run_openstack(clouds_yaml, "sunbeam-admin", "image", "list", "-f", "value", "-c", "Name").splitlines()
     flavor_names = _run_openstack(clouds_yaml, "sunbeam-admin", "flavor", "list", "-f", "value", "-c", "Name").splitlines()
     external_networks = _run_openstack(clouds_yaml, "sunbeam-admin", "network", "list", "--external", "-f", "value", "-c", "Name").splitlines()
@@ -166,6 +166,36 @@ def _build_autonomous_vm_args(clouds_yaml: Path, config: dict[str, object]) -> d
     }
 
 
+def _build_spiky_autonomous_vm_args(
+    clouds_yaml: Path,
+    config: dict[str, object],
+) -> dict[str, object]:
+    rendered = _build_autonomous_vm_args(clouds_yaml, config)
+    rendered["description"] = "Autonomous CI-like runner churn with a spiky arrival schedule"
+    rendered["scenario"] = {
+        "family": "autonomous_vm",
+        "name": "CIChurn.spiky_autonomous_vm",
+        "timeout_seconds": 3600,
+        "timeout_mode": "fail",
+        "console_log_length": 400,
+    }
+    rendered["schedule"] = {
+        "duration_seconds": 60,
+        "max_active_vms": 2,
+        "baseline_launches_per_minute": 6,
+        "launch_tick_seconds": 1,
+        "burst_windows": [
+            {
+                "start_second": 10,
+                "end_second": 20,
+                "launch_rate_multiplier": 4.0,
+            },
+        ],
+    }
+    rendered["workload"]["profile"] = "smoke"
+    return rendered
+
+
 def _write_adminrc(path: Path, admin_cloud: dict[str, object]) -> None:
     auth = admin_cloud["auth"]
     auth_url = str(auth["auth_url"])
@@ -208,15 +238,20 @@ def main(argv: list[str] | None = None) -> int:
     output_args = Path(args.output_args).resolve()
     output_adminrc = Path(args.output_adminrc).resolve()
     config = _normalize_clouds(clouds_yaml)
-    if args.scenario != DEFAULT_SCENARIO:
-        raise RuntimeError(f"Unsupported scenario selector: {args.scenario}")
     with tempfile.TemporaryDirectory(prefix="rally-ci-clouds-") as temp_dir:
         normalized_clouds_yaml = Path(temp_dir) / "clouds.yaml"
         normalized_clouds_yaml.write_text(
             yaml.safe_dump(config, sort_keys=False),
             encoding="utf-8",
         )
-        rendered_args = _build_autonomous_vm_args(normalized_clouds_yaml, config)
+        if args.scenario == DEFAULT_SCENARIO:
+            rendered_args = _build_autonomous_vm_args(normalized_clouds_yaml, config)
+            task_path = "tasks/autonomous_vm_waves.yaml.j2"
+        elif args.scenario == SPIKY_SCENARIO:
+            rendered_args = _build_spiky_autonomous_vm_args(normalized_clouds_yaml, config)
+            task_path = "tasks/spiky_autonomous_vm.yaml.j2"
+        else:
+            raise RuntimeError(f"Unsupported scenario selector: {args.scenario}")
         output_args.parent.mkdir(parents=True, exist_ok=True)
         output_adminrc.parent.mkdir(parents=True, exist_ok=True)
         output_args.write_text(yaml.safe_dump(rendered_args, sort_keys=False), encoding="utf-8")
@@ -228,9 +263,9 @@ def main(argv: list[str] | None = None) -> int:
         "Next steps:\n"
         "  source .venv/bin/activate\n"
         f"  source {output_adminrc}\n"
-        "  rally task validate tasks/autonomous_vm_waves.yaml.j2 "
+        f"  rally task validate {task_path} "
         f"--task-args-file {output_args}\n"
-        "  rally task start tasks/autonomous_vm_waves.yaml.j2 "
+        f"  rally task start {task_path} "
         f"--task-args-file {output_args}"
     )
     return 0

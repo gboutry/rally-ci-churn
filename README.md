@@ -13,25 +13,32 @@ The primary VM benchmark path is autonomous:
 1. Rally boots a VM with `cloud-init`.
 2. The guest runs the workload itself and uploads artifacts to Swift itself.
 3. The guest powers itself off.
-4. Rally waits for `SHUTOFF`, parses the console result, and deletes the VM.
+4. Rally waits for `SHUTOFF`, reads the structured result, and deletes the VM.
 
 No floating IPs or SSH are required for the main benchmark path.
 
-## Current scenario
+## Current scenarios
 
 - `CIChurn.boot_autonomous_vm`
   - no-FIP, no-SSH autonomous runner lifecycle
   - configurable timeout
-  - `timeout_seconds: 0` means infinite wait
+  - `timeout_seconds` controls per-VM wait time
   - `timeout_mode: fail|soft`
+- `CIChurn.spiky_autonomous_vm`
+  - no-FIP, no-SSH autonomous runner lifecycle
+  - launches VMs over a time-based burst schedule
+  - caps live VMs with `max_active_vms`
+  - drops launches that would exceed the cap
 
-The primary task template is:
+The primary task templates are:
 
 - `tasks/autonomous_vm_waves.yaml.j2`
+- `tasks/spiky_autonomous_vm.yaml.j2`
 
-The primary example args file is:
+The primary example args files are:
 
 - `args/autonomous_vm.example.yaml`
+- `args/spiky_autonomous_vm.example.yaml`
 
 ## Fast start
 
@@ -64,6 +71,18 @@ rally task validate tasks/autonomous_vm_waves.yaml.j2 \
   --task-args-file args/sunbeam.local.yaml
 
 rally task start tasks/autonomous_vm_waves.yaml.j2 \
+  --task-args-file args/sunbeam.local.yaml
+```
+
+For the spiky variant:
+
+```bash
+./scripts/setup_uv.sh /path/to/clouds.yaml spiky_autonomous_vm
+
+rally task validate tasks/spiky_autonomous_vm.yaml.j2 \
+  --task-args-file args/sunbeam.local.yaml
+
+rally task start tasks/spiky_autonomous_vm.yaml.j2 \
   --task-args-file args/sunbeam.local.yaml
 ```
 
