@@ -33,26 +33,63 @@ RESULT_FETCH_TIMEOUT_SECONDS = 30
 
 
 class _AutonomousVMBase(nova_utils.NovaScenario):
-    @atomic.action_timer("vm.wait_for_shutdown")
-    def _wait_for_shutdown(self, server, timeout_seconds: int):
+    def _show_server_or_none(self, server):
+        try:
+            return self._show_server(server)
+        except Exception:  # noqa: BLE001
+            return None
+
+    @atomic.action_timer("vm.wait_for_completion")
+    def _wait_for_result_or_shutdown(
+        self,
+        vm_state: dict[str, object],
+        artifact_container: str,
+        console_log_length: int,
+        swift_context: SSLContext,
+        swift_token: str,
+        swift_endpoint: str,
+        timeout_seconds: int,
+    ) -> tuple[object | None, dict[str, object] | None, bool]:
         start = time.monotonic()
+        server = vm_state["server"]
+        result_object_name = str(vm_state["result_object_name"])
+
         while True:
-            server = self._show_server(server)
-            if server.status == "SHUTOFF":
-                return server
-            if server.status == "ERROR":
-                raise rally_exceptions.ScriptError(
-                    message=f"Server {server.id} entered ERROR state before shutdown"
+            server = self._show_server_or_none(server)
+            if server is not None:
+                vm_state["server"] = server
+                if server.status == "ERROR":
+                    raise rally_exceptions.ScriptError(
+                        message=f"Server {server.id} entered ERROR state before completion"
+                    )
+
+            result = self._read_swift_object(
+                swift_endpoint,
+                artifact_container,
+                result_object_name,
+                swift_token,
+                swift_context,
+            )
+            if result:
+                return server, result, False
+
+            if server is not None and server.status == "SHUTOFF":
+                return (
+                    server,
+                    self._fetch_vm_result(
+                        vm_state,
+                        artifact_container,
+                        console_log_length,
+                        swift_context,
+                        swift_token,
+                        swift_endpoint,
+                    ),
+                    False,
                 )
+
             if timeout_seconds > 0 and (time.monotonic() - start) >= timeout_seconds:
-                raise rally_exceptions.TimeoutException(
-                    timeout=timeout_seconds,
-                    resource_type="server",
-                    resource_name=server.name,
-                    resource_id=server.id,
-                    desired_status="SHUTOFF",
-                    resource_status=server.status,
-                )
+                return server, None, True
+
             time.sleep(POLL_INTERVAL_SECONDS)
 
     def _build_user_data(self, payload: dict[str, object], swift_cacert_b64: str) -> str:
@@ -89,8 +126,12 @@ class _AutonomousVMBase(nova_utils.NovaScenario):
                 "runcmd:",
                 (
                     '  - [ cloud-init-per, once, rally-ci-runner, /bin/bash, -lc, '
-                    '"python3 /opt/rally-ci/runner_main.py /opt/rally-ci/config.json '
-                    '> >(tee -a /var/log/rally-ci-runner.log /dev/console) 2>&1 || true; '
+                    '"set -o pipefail; '
+                    'echo RALLY_CI_BOOT_START=$(date -Is); '
+                    'python3 /opt/rally-ci/runner_main.py /opt/rally-ci/config.json '
+                    '2>&1 | tee -a /var/log/rally-ci-runner.log; '
+                    'runner_rc=${PIPESTATUS[0]}; '
+                    'echo RALLY_CI_BOOT_END=$runner_rc $(date -Is); '
                     'sync; (systemctl poweroff --force --force || poweroff -f || shutdown -P now)" ]'
                 ),
             ]
@@ -428,10 +469,15 @@ class BootAutonomousVM(_AutonomousVMBase):
         result = None
         timed_out = False
         try:
-            try:
-                self._wait_for_shutdown(vm_state["server"], int(timeout_seconds))
-            except rally_exceptions.TimeoutException:
-                timed_out = True
+            _, result, timed_out = self._wait_for_result_or_shutdown(
+                vm_state,
+                artifact_container,
+                console_log_length,
+                swift_context,
+                swift_token,
+                swift_endpoint,
+                int(timeout_seconds),
+            )
             if timed_out:
                 result = self._build_timeout_result(
                     "CIChurn.boot_autonomous_vm",
@@ -439,15 +485,6 @@ class BootAutonomousVM(_AutonomousVMBase):
                     vm_state["launched_monotonic"],
                     wave,
                     iteration,
-                )
-            else:
-                result = self._fetch_vm_result(
-                    vm_state,
-                    artifact_container,
-                    console_log_length,
-                    swift_context,
-                    swift_token,
-                    swift_endpoint,
                 )
             if not result:
                 raise rally_exceptions.ScriptError(
@@ -635,7 +672,37 @@ class SpikyAutonomousVM(_AutonomousVMBase):
                 for server_id, vm_state in list(active_vms.items()):
                     server = self._show_server(vm_state["server"])
                     vm_state["server"] = server
-                    if server.status == "SHUTOFF":
+                    result = self._read_swift_object(
+                        swift_endpoint,
+                        artifact_container,
+                        str(vm_state["result_object_name"]),
+                        swift_token,
+                        swift_context,
+                    )
+                    if result:
+                        status = str(result.get("status", "unknown"))
+                        error = str(result.get("diagnostics", {}).get("error", ""))
+                        artifact = ""
+                        artifact_refs = result.get("artifact_refs", [])
+                        if artifact_refs and isinstance(artifact_refs[0], dict):
+                            artifact = str(artifact_refs[0].get("object_name", ""))
+                        vm_rows.append(
+                            [
+                                server.name,
+                                status,
+                                result.get("duration_seconds", ""),
+                                artifact,
+                                error,
+                            ]
+                        )
+                        summary["completed_vms"] += 1
+                        if status == "error":
+                            summary["failed_vms"] += 1
+                            errors.append(error or f"{server.name} returned an error result")
+                        completed_since_tick += 1
+                        self._delete_vm(vm_state, force_delete)
+                        del active_vms[server_id]
+                    elif server.status == "SHUTOFF":
                         result = self._fetch_vm_result(
                             vm_state,
                             artifact_container,

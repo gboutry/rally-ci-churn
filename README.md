@@ -11,9 +11,9 @@ task file. It provides:
 The primary VM benchmark path is autonomous:
 
 1. Rally boots a VM with `cloud-init`.
-2. The guest runs the workload itself and uploads artifacts to Swift itself.
-3. The guest powers itself off.
-4. Rally waits for `SHUTOFF`, reads the structured result, and deletes the VM.
+2. The guest runs the workload itself and uploads artifacts and a structured result to Swift.
+3. Rally treats the uploaded result as the completion signal, falls back to `SHUTOFF` if needed, and deletes the VM.
+4. Guest poweroff remains best-effort guest cleanup, not a hard dependency for success.
 
 No floating IPs or SSH are required for the main benchmark path.
 
@@ -114,13 +114,69 @@ It writes:
 - `src/rally_ci_churn/guest/`: packaged autonomous guest workload runners
 - `src/rally_ci_churn/results.py`: shared result parsing/output shaping
 - `src/rally_ci_churn/bootstrap/`: Sunbeam-oriented discovery and args generation
+- `images/`: experimental Imagecraft recipes for pre-baked benchmark images
 - `tasks/`: Rally task templates
 - `scripts/setup_uv.sh`: thin local bootstrap wrapper
 
-## Existing helper scripts
+## Experimental Imagecraft images
 
-These remain useful but are not the primary benchmark path:
+For workload images that should not install packages at first boot, this repo
+now includes an Imagecraft path under `images/`.
 
-- `scripts/prepare_build_image.sh`
-- `scripts/install_build_profile.sh`
-- `scripts/cleanup_swift_container.py`
+The first recipe is:
+
+- `images/ubuntu-stress-ng/imagecraft.yaml`
+
+This path is intentionally parallel to the Rally runtime. It does not change
+task bootstrap, Glance upload, or task execution. It is only for building local
+benchmark images ahead of time.
+
+The `ubuntu-stress-ng` recipe targets Ubuntu 24.04 on amd64 and preinstalls:
+
+- boot assets for a classic UEFI image
+- `cloud-init`
+- `python3`
+- `ca-certificates`
+- `stress-ng`
+
+It also ships a marker file at:
+
+- `/etc/rally-ci-churn/image-profile`
+
+Quick validation with the locally installed Imagecraft tool:
+
+```bash
+cd images/ubuntu-stress-ng
+imagecraft stage --use-lxd
+```
+
+The bootable recipe uses `mmdebstrap`, so the full build path needs elevated
+privileges on the host:
+
+To build a local artifact, use Imagecraft's normal pack flow:
+
+```bash
+cd images/ubuntu-stress-ng
+sudo imagecraft pack --destructive-mode
+```
+
+To keep that destructive build isolated from your host, use the helper:
+
+```bash
+./scripts/build_imagecraft_vm.sh images/ubuntu-stress-ng
+```
+
+That helper launches a temporary Ubuntu 24.04 LXD VM, installs Imagecraft
+inside it, runs `imagecraft pack --destructive-mode` there, pulls `disk.img`
+back into the recipe directory, and removes the VM by default.
+
+The recipe follows a minimal bootable classic-image layout:
+
+- GPT disk with `efi` and `rootfs` partitions
+- `mmdebstrap` rootfs bootstrap
+- `ubuntu-server-minimal`, `grub`, and `linux-image-generic`
+- OpenStack-oriented cloud-init datasource preference
+- serial console enabled through a grub drop-in plus cloud-init/journald forwarding
+
+The resulting `disk.img` is local-only for now; Glance upload and cloud boot
+validation remain separate manual steps.

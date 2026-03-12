@@ -43,9 +43,19 @@ htmlcov/
 *.log
 *.tmp
 *.bak
+images/*/*.img
+images/*/cloud-init/
+images/*/imagecraft_volumes/
+images/*/overlay/
+images/*/parts/
+images/*/prime/
+images/*/stage/
 
 # Local task args and scratch files
 adminrc
 args/local*.yaml
 args/*.local.yaml
 args/*.secret.yaml
+
+# imagecraft artifacts
+*.img
