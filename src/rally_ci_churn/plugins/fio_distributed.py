@@ -12,6 +12,7 @@ from importlib import resources
 from pathlib import Path
 
 from rally import exceptions as rally_exceptions
+from rally.task import atomic
 from rally.task import types
 from rally.task import validation
 from rally.utils import sshutils
@@ -20,7 +21,13 @@ from rally_openstack.common import consts
 from rally_openstack.task import scenario
 from rally_openstack.task.scenarios.vm import utils as vm_utils
 
+from rally_ci_churn.results import build_artifacts_output
+from rally_ci_churn.results import build_metrics_output
+from rally_ci_churn.results import build_phase_output
+from rally_ci_churn.results import build_summary_output
 from rally_ci_churn.results import build_table_output
+from rally_ci_churn.results import summarize_atomic_actions
+from rally_ci_churn.results import summarize_numeric_series
 
 
 DEFAULT_FIO_PORT = 8765
@@ -87,6 +94,9 @@ class _FioDistributedBase(vm_utils.VMScenario):
         if isinstance(task, dict) and task.get("uuid"):
             return str(task["uuid"])
         return uuid.uuid4().hex
+
+    def _iteration_number(self) -> int:
+        return int(self.context.get("iteration", 0) or 0)
 
     def _network_name(self, server) -> str:
         return next(iter(server.networks))
@@ -249,6 +259,44 @@ runcmd:
   - [ cloud-init-per, once, rally-fio-worker-start, /bin/bash, -lc, "/usr/local/bin/rally-fio-worker.sh" ]
 """
 
+    @atomic.action_timer("controller.boot")
+    def _boot_controller(
+        self,
+        controller_image,
+        controller_flavor,
+        external_network_name: str,
+        key_name: str,
+        security_group_name: str,
+    ):
+        return self._boot_server_with_fip(
+            controller_image,
+            controller_flavor,
+            use_floating_ip=True,
+            floating_network=external_network_name,
+            key_name=key_name,
+            security_groups=[security_group_name],
+            userdata=self._build_controller_user_data(),
+        )
+
+    @atomic.action_timer("worker.boot")
+    def _boot_worker(
+        self,
+        worker_image,
+        worker_flavor,
+        key_name: str,
+        security_group_name: str,
+        expected_volumes: int,
+        fio_port: int,
+    ):
+        return self._boot_server(
+            worker_image,
+            worker_flavor,
+            auto_assign_nic=True,
+            key_name=key_name,
+            security_groups=[security_group_name],
+            userdata=self._build_worker_user_data(expected_volumes, fio_port),
+        )
+
     def _wait_for_volume_status(self, volume_id: str, statuses: list[str], timeout_seconds: int = 600):
         deadline = time.monotonic() + timeout_seconds
         volume = None
@@ -262,6 +310,7 @@ runcmd:
             message=f"Volume {volume_id} did not reach {statuses} before timeout (current={current})"
         )
 
+    @atomic.action_timer("volume.create")
     def _create_volume(self, size: int, volume_type: str | None):
         kwargs: dict[str, object] = {"size": size, "name": self.generate_random_name()}
         if volume_type:
@@ -269,6 +318,7 @@ runcmd:
         volume = self.clients("cinder").volumes.create(**kwargs)
         return self._wait_for_volume_status(volume.id, ["available"])
 
+    @atomic.action_timer("volume.attach")
     def _attach_volume(self, server, volume_id: str, device_name: str):
         last_error = None
         for attempt in range(1, ATTACH_RETRY_COUNT + 1):
@@ -307,6 +357,7 @@ runcmd:
         except Exception:
             return
 
+    @atomic.action_timer("controller.connect_ssh")
     def _ssh(
         self,
         ip_address: str,
@@ -318,6 +369,7 @@ runcmd:
         self._wait_for_ssh(ssh, timeout=timeout_seconds, interval=2)
         return ssh
 
+    @atomic.action_timer("artifacts.download")
     def _download_tree(self, ssh: sshutils.SSH, remote_dir: str, local_dir: Path) -> None:
         client = ssh._get_client()  # noqa: SLF001 - Rally's SSH helper does not expose SFTP download.
         local_dir.mkdir(parents=True, exist_ok=True)
@@ -334,6 +386,7 @@ runcmd:
             else:
                 sftp.get(remote_path, str(local_path))
 
+    @atomic.action_timer("worker.wait_ready")
     def _wait_for_worker_fio_ready(
         self,
         ssh: sshutils.SSH,
@@ -421,11 +474,12 @@ runcmd:
         return cases
 
     def _artifacts_dir(self, root_dir: str) -> Path:
-        task_dir = Path(root_dir).expanduser().resolve() / self._task_uuid() / "fio-distributed"
-        if task_dir.exists():
-            shutil.rmtree(task_dir)
-        task_dir.mkdir(parents=True, exist_ok=True)
-        return task_dir
+        scenario_root = Path(root_dir).expanduser().resolve() / self._task_uuid() / "fio-distributed"
+        iteration_dir = scenario_root / f"iteration-{self._iteration_number():04d}"
+        if iteration_dir.exists():
+            shutil.rmtree(iteration_dir)
+        iteration_dir.mkdir(parents=True, exist_ok=True)
+        return iteration_dir
 
     def _inventory_payload(
         self,
@@ -447,6 +501,64 @@ runcmd:
                 for worker in workers
             ],
         }
+
+    @atomic.action_timer("controller.upload_inputs")
+    def _upload_controller_inputs(
+        self,
+        ssh: sshutils.SSH,
+        ssh_user: str,
+        controller_remote_dir: str,
+        inventory: dict[str, object],
+        matrix: dict[str, object],
+    ) -> None:
+        ssh.execute(
+            [
+                "sudo",
+                "install",
+                "-d",
+                "-o",
+                ssh_user,
+                "-g",
+                ssh_user,
+                "-m",
+                "0755",
+                controller_remote_dir,
+            ],
+            timeout=300,
+        )
+        controller_runner = resources.files("rally_ci_churn.fio").joinpath("controller_runner.py")
+        with tempfile.TemporaryDirectory(prefix="rally-fio-controller-") as temp_dir:
+            temp_path = Path(temp_dir)
+            inventory_path = temp_path / "inventory.json"
+            matrix_path = temp_path / "matrix.json"
+            controller_path = temp_path / "controller_runner.py"
+            inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True), encoding="utf-8")
+            matrix_path.write_text(json.dumps(matrix, indent=2, sort_keys=True), encoding="utf-8")
+            controller_path.write_text(controller_runner.read_text(encoding="utf-8"), encoding="utf-8")
+            ssh.put_file(str(inventory_path), f"{controller_remote_dir}/inventory.json", mode=0o644)
+            ssh.put_file(str(matrix_path), f"{controller_remote_dir}/matrix.json", mode=0o644)
+            ssh.put_file(str(controller_path), f"{controller_remote_dir}/controller_runner.py", mode=0o755)
+
+    @atomic.action_timer("fio.run_matrix")
+    def _run_controller_runner(
+        self,
+        ssh: sshutils.SSH,
+        controller_remote_dir: str,
+        command_timeout_seconds: int,
+    ) -> tuple[int, str, str]:
+        return ssh.execute(
+            [
+                "python3",
+                f"{controller_remote_dir}/controller_runner.py",
+                "--inventory",
+                f"{controller_remote_dir}/inventory.json",
+                "--matrix",
+                f"{controller_remote_dir}/matrix.json",
+                "--output-dir",
+                controller_remote_dir,
+            ],
+            timeout=command_timeout_seconds,
+        )
 
     def _summary_rows(self, summary_payload: dict[str, object]) -> list[list[object]]:
         rows = []
@@ -471,7 +583,87 @@ runcmd:
             )
         return rows
 
+    def _summary_dict(self, summary_payload: dict[str, object], artifacts_dir: Path) -> dict[str, object]:
+        inventory = summary_payload.get("inventory", {})
+        matrix = summary_payload.get("matrix", {})
+        workers = inventory.get("workers", []) if isinstance(inventory, dict) else []
+        rows = summary_payload.get("rows", []) if isinstance(summary_payload, dict) else []
+        max_volumes = max((len(worker.get("devices", [])) for worker in workers if isinstance(worker, dict)), default=0)
+        return {
+            "controller_nodes": 1,
+            "worker_nodes": len(workers),
+            "total_provisioned_volumes": len(workers) * max_volumes,
+            "matrix_cases": len(rows),
+            "ioengine": str(matrix.get("ioengine", "")) if isinstance(matrix, dict) else "",
+            "artifact_root": str(artifacts_dir),
+        }
+
+    def _metric_rows(self, summary_payload: dict[str, object]) -> list[list[object]]:
+        rows = summary_payload.get("rows", []) if isinstance(summary_payload, dict) else []
+        if not isinstance(rows, list) or not rows:
+            return []
+        throughput_values = [
+            float(row.get("throughput_bytes_per_sec", 0.0))
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        iops_values = [
+            float(row.get("iops", 0.0))
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        p99_values = [
+            float(row.get("p99_latency_ms", 0.0))
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        avg_latency_values = [
+            float(row.get("avg_latency_ms", 0.0))
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        profiles = sorted(
+            {
+                str(row.get("profile_name", ""))
+                for row in rows
+                if isinstance(row, dict) and row.get("profile_name")
+            }
+        )
+        throughput_stats = summarize_numeric_series(throughput_values)
+        latency_stats = summarize_numeric_series(avg_latency_values)
+        metrics = [
+            ["best_throughput_bytes_per_sec", str(round(max(throughput_values), 3))],
+            ["median_throughput_bytes_per_sec", str(round(float(throughput_stats.get("p50", 0.0)), 3))],
+            ["best_iops", str(round(max(iops_values), 3))],
+            ["worst_p99_latency_ms", str(round(max(p99_values), 3))],
+            ["median_avg_latency_ms", str(round(float(latency_stats.get("p50", 0.0)), 3))],
+            ["profiles", ",".join(profiles)],
+        ]
+        return metrics
+
+    def _artifact_rows(self, artifacts_dir: Path) -> list[list[object]]:
+        return [
+            ["artifact_root", str(artifacts_dir)],
+            ["summary_markdown", str(artifacts_dir / "summary.md")],
+            ["summary_json", str(artifacts_dir / "summary.json")],
+            ["manifest_json", str(artifacts_dir / "manifest.json")],
+        ]
+
+    def _timings_payload(self) -> dict[str, dict[str, object]]:
+        _, summary = summarize_atomic_actions(self.atomic_actions())
+        return summary
+
     def _result_payload(self, artifacts_dir: Path, summary_payload: dict[str, object]) -> dict[str, object]:
+        summary = self._summary_dict(summary_payload, artifacts_dir)
+        metrics = {
+            "rows": summary_payload.get("rows", []),
+            "aggregates": {
+                key: value
+                for key, value in (
+                    (row[0], row[1]) for row in self._metric_rows(summary_payload)
+                )
+            },
+        }
         return {
             "schema_version": 1,
             "scenario_family": "fio_distributed",
@@ -480,6 +672,11 @@ runcmd:
             "artifact_root": str(artifacts_dir),
             "matrix_cases": len(summary_payload.get("rows", [])),
             "summary_rows": summary_payload.get("rows", []),
+            "summary": summary,
+            "metrics": metrics,
+            "timings": self._timings_payload(),
+            "artifacts": {key: value for key, value in self._artifact_rows(artifacts_dir)},
+            "diagnostics": {},
         }
 
 
@@ -560,23 +757,21 @@ class FioDistributedScenario(_FioDistributedBase):
         controller_remote_dir = f"/var/lib/rally-fio/run/{uuid.uuid4().hex}"
 
         try:
-            controller, controller_fip = self._boot_server_with_fip(
+            controller, controller_fip = self._boot_controller(
                 controller_image,
                 controller_flavor,
-                use_floating_ip=True,
-                floating_network=external_network_name,
-                key_name=keypair["name"],
-                security_groups=[controller_sg["name"]],
-                userdata=self._build_controller_user_data(),
+                external_network_name,
+                keypair["name"],
+                controller_sg["name"],
             )
             for _ in range(max_clients):
-                worker = self._boot_server(
+                worker = self._boot_worker(
                     worker_image,
                     worker_flavor,
-                    auto_assign_nic=True,
-                    key_name=keypair["name"],
-                    security_groups=[worker_sg["name"]],
-                    userdata=self._build_worker_user_data(max_volumes_per_client, fio_port),
+                    keypair["name"],
+                    worker_sg["name"],
+                    max_volumes_per_client,
+                    fio_port,
                 )
                 workers.append({"server": worker, "fixed_ip": self._fixed_ip(worker)})
 
@@ -616,46 +811,17 @@ class FioDistributedScenario(_FioDistributedBase):
                 ),
             }
             inventory = self._inventory_payload(workers, fio_port, max_volumes_per_client)
-            ssh.execute(
-                [
-                    "sudo",
-                    "install",
-                    "-d",
-                    "-o",
-                    ssh_user,
-                    "-g",
-                    ssh_user,
-                    "-m",
-                    "0755",
-                    controller_remote_dir,
-                ],
-                timeout=ssh_connect_timeout_seconds,
+            self._upload_controller_inputs(
+                ssh,
+                ssh_user,
+                controller_remote_dir,
+                inventory,
+                matrix,
             )
-            controller_runner = resources.files("rally_ci_churn.fio").joinpath("controller_runner.py")
-            with tempfile.TemporaryDirectory(prefix="rally-fio-controller-") as temp_dir:
-                temp_path = Path(temp_dir)
-                inventory_path = temp_path / "inventory.json"
-                matrix_path = temp_path / "matrix.json"
-                controller_path = temp_path / "controller_runner.py"
-                inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True), encoding="utf-8")
-                matrix_path.write_text(json.dumps(matrix, indent=2, sort_keys=True), encoding="utf-8")
-                controller_path.write_text(controller_runner.read_text(encoding="utf-8"), encoding="utf-8")
-                ssh.put_file(str(inventory_path), f"{controller_remote_dir}/inventory.json", mode=0o644)
-                ssh.put_file(str(matrix_path), f"{controller_remote_dir}/matrix.json", mode=0o644)
-                ssh.put_file(str(controller_path), f"{controller_remote_dir}/controller_runner.py", mode=0o755)
-
-            exit_status, stdout, stderr = ssh.execute(
-                [
-                    "python3",
-                    f"{controller_remote_dir}/controller_runner.py",
-                    "--inventory",
-                    f"{controller_remote_dir}/inventory.json",
-                    "--matrix",
-                    f"{controller_remote_dir}/matrix.json",
-                    "--output-dir",
-                    controller_remote_dir,
-                ],
-                timeout=command_timeout_seconds,
+            exit_status, stdout, stderr = self._run_controller_runner(
+                ssh,
+                controller_remote_dir,
+                command_timeout_seconds,
             )
             if exit_status != 0:
                 raise rally_exceptions.ScriptError(
@@ -690,7 +856,14 @@ class FioDistributedScenario(_FioDistributedBase):
         if summary_payload is None:
             raise rally_exceptions.ScriptError(message="fio run did not produce a local summary.json artifact")
 
+        summary = self._summary_dict(summary_payload, artifacts_dir)
+        metric_rows = self._metric_rows(summary_payload)
         summary_rows = self._summary_rows(summary_payload)
+        self.add_output(
+            complete=build_summary_output(summary)
+        )
+        if metric_rows:
+            self.add_output(complete=build_metrics_output(metric_rows))
         self.add_output(
             complete=build_table_output(
                 "FIO summary",
@@ -713,11 +886,7 @@ class FioDistributedScenario(_FioDistributedBase):
             )
         )
         self.add_output(
-            complete=build_table_output(
-                "Local artifacts",
-                "Artifacts copied back from the fio controller to the Rally host",
-                ["path", "value"],
-                [["artifact_root", str(artifacts_dir)]],
-            )
+            complete=build_phase_output(self.atomic_actions())
         )
+        self.add_output(complete=build_artifacts_output(self._artifact_rows(artifacts_dir)))
         return self._result_payload(artifacts_dir, summary_payload)

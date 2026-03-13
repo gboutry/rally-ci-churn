@@ -22,10 +22,16 @@ from rally_openstack.common import consts
 from rally_openstack.task import scenario
 from rally_openstack.task.scenarios.nova import utils as nova_utils
 
-from rally_ci_churn.results import build_metadata_output
+from rally_ci_churn.results import build_artifacts_output
+from rally_ci_churn.results import build_failure_reason_output
+from rally_ci_churn.results import build_metrics_output
+from rally_ci_churn.results import build_phase_output
+from rally_ci_churn.results import build_summary_output
 from rally_ci_churn.results import build_stage_output
 from rally_ci_churn.results import build_table_output
 from rally_ci_churn.results import parse_console_result
+from rally_ci_churn.results import summarize_atomic_actions
+from rally_ci_churn.results import summarize_numeric_series
 
 
 POLL_INTERVAL_SECONDS = 2.0
@@ -163,6 +169,7 @@ class _AutonomousVMBase(nova_utils.NovaScenario):
             return auth_url + "/auth/tokens"
         return auth_url + "/v3/auth/tokens"
 
+    @atomic.action_timer("auth.swift")
     def _authenticate_swift(
         self,
         swift_auth_url: str,
@@ -265,6 +272,7 @@ class _AutonomousVMBase(nova_utils.NovaScenario):
             time.sleep(POLL_INTERVAL_SECONDS)
         return None
 
+    @atomic.action_timer("vm.launch")
     def _launch_runner_vm(
         self,
         image,
@@ -420,6 +428,123 @@ class _AutonomousVMBase(nova_utils.NovaScenario):
             error,
         ]
 
+    def _stage_seconds(self, result: dict[str, object]) -> dict[str, float]:
+        values: dict[str, float] = {}
+        for stage in result.get("stages", []):
+            if not isinstance(stage, dict):
+                continue
+            name = stage.get("stage")
+            seconds = stage.get("seconds")
+            if isinstance(name, str) and isinstance(seconds, (int, float)):
+                values[name] = round(float(seconds), 3)
+        return values
+
+    def _result_metrics(self, result: dict[str, object]) -> dict[str, object]:
+        metrics = result.get("metrics", {})
+        normalized = dict(metrics) if isinstance(metrics, dict) else {}
+        stage_seconds = self._stage_seconds(result)
+        if stage_seconds:
+            normalized["stage_seconds"] = stage_seconds
+        return normalized
+
+    def _single_vm_summary(self, result: dict[str, object], workload_profile: str) -> dict[str, object]:
+        return {
+            "status": str(result.get("status", "unknown")),
+            "workload_profile": workload_profile,
+            "duration_seconds": result.get("duration_seconds", ""),
+            "timeout": str(bool(result.get("timeout", False))),
+            "artifact_count": len(result.get("artifact_refs", [])),
+        }
+
+    def _single_vm_metric_rows(self, result: dict[str, object]) -> list[list[object]]:
+        rows: list[list[object]] = []
+        metrics = result.get("metrics", {})
+        if isinstance(metrics, dict):
+            for key in ("artifact_bytes", "upload_seconds", "upload_mib_per_second"):
+                if key in metrics:
+                    rows.append([key, str(metrics[key])])
+        for stage_name, seconds in sorted(self._stage_seconds(result).items()):
+            rows.append([f"stage.{stage_name}.seconds", str(seconds)])
+        return rows
+
+    def _single_vm_artifact_rows(self, result: dict[str, object]) -> list[list[object]]:
+        rows: list[list[object]] = []
+        for index, artifact in enumerate(result.get("artifact_refs", []), start=1):
+            if not isinstance(artifact, dict):
+                continue
+            rows.append([f"artifact_{index}.object_name", str(artifact.get("object_name", ""))])
+            if "artifact_bytes" in artifact:
+                rows.append([f"artifact_{index}.bytes", str(artifact["artifact_bytes"])])
+        diagnostics = result.get("diagnostics", {})
+        if isinstance(diagnostics, dict) and "result_object_name" in diagnostics:
+            rows.append(["result_object_name", str(diagnostics["result_object_name"])])
+        return rows
+
+    def _multi_vm_metric_rows(
+        self,
+        summary: dict[str, object],
+        vm_rows: list[list[object]],
+        workload_mix: list[dict[str, object]] | None = None,
+    ) -> list[list[object]]:
+        rows: list[list[object]] = []
+        launched = int(summary.get("launched_vms", 0) or 0)
+        if launched > 0:
+            failed = int(summary.get("failed_vms", 0) or 0)
+            timed_out = int(summary.get("timed_out_vms", 0) or 0)
+            successful = max(launched - failed - timed_out, 0)
+            rows.append(["success_rate", str(round(successful / launched, 3))])
+            rows.append(["error_rate", str(round(failed / launched, 3))])
+            rows.append(["timeout_rate", str(round(timed_out / launched, 3))])
+        durations = [
+            float(row[2])
+            for row in vm_rows
+            if len(row) > 2 and isinstance(row[2], (int, float))
+        ]
+        duration_stats = summarize_numeric_series(durations)
+        for key in ("min", "avg", "p50", "p95", "max"):
+            if key in duration_stats:
+                rows.append([f"duration_{key}_seconds", str(round(float(duration_stats[key]), 3))])
+        if "effective_launches_per_minute" in summary:
+            rows.append(["effective_launches_per_minute", str(summary["effective_launches_per_minute"])])
+        if "dropped_launches" in summary and launched > 0:
+            rows.append(["drop_rate", str(round(int(summary["dropped_launches"]) / launched, 3))])
+        if workload_mix:
+            rows.append(["configured_workload_mix_items", str(len(workload_mix))])
+        return rows
+
+    def _artifact_rows_for_container(self, artifact_container: str) -> list[list[object]]:
+        return [["artifact_container", artifact_container]]
+
+    def _timings_payload(self) -> dict[str, dict[str, object]]:
+        _, summary = summarize_atomic_actions(self.atomic_actions())
+        return summary
+
+    def _build_result_payload(
+        self,
+        scenario_name: str,
+        status: str,
+        summary: dict[str, object],
+        metrics: dict[str, object],
+        artifacts: dict[str, object],
+        diagnostics: dict[str, object] | None = None,
+        extra: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        payload = {
+            "schema_version": 1,
+            "scenario_family": "autonomous_vm",
+            "scenario_name": scenario_name,
+            "status": status,
+            "summary": summary,
+            "metrics": metrics,
+            "timings": self._timings_payload(),
+            "artifacts": artifacts,
+            "diagnostics": diagnostics or {},
+        }
+        if extra:
+            payload.update(extra)
+        return payload
+
+    @atomic.action_timer("result.fetch")
     def _fetch_vm_result(
         self,
         vm_state: dict[str, object],
@@ -447,6 +572,7 @@ class _AutonomousVMBase(nova_utils.NovaScenario):
             RESULT_FETCH_TIMEOUT_SECONDS,
         )
 
+    @atomic.action_timer("cleanup")
     def _delete_vm(self, vm_state: dict[str, object], force_delete: bool) -> None:
         self._delete_server(vm_state["server"], force=force_delete)
 
@@ -548,8 +674,16 @@ class BootAutonomousVM(_AutonomousVMBase):
                 raise rally_exceptions.ScriptError(
                     message="Guest completed without emitting a structured result payload"
                 )
-            self.add_output(complete=build_metadata_output(result))
+            summary = self._single_vm_summary(result, workload_profile)
+            metric_rows = self._single_vm_metric_rows(result)
+            artifact_rows = self._single_vm_artifact_rows(result)
+            self.add_output(complete=build_summary_output(summary))
+            if metric_rows:
+                self.add_output(complete=build_metrics_output(metric_rows))
             self.add_output(complete=build_stage_output(result))
+            self.add_output(complete=build_phase_output(self.atomic_actions()))
+            if artifact_rows:
+                self.add_output(complete=build_artifacts_output(artifact_rows))
             if result.get("status") == "error" and not allow_guest_errors:
                 raise rally_exceptions.ScriptError(
                     message=str(result.get("diagnostics", {}).get("error", "Guest benchmark failed"))
@@ -558,6 +692,22 @@ class BootAutonomousVM(_AutonomousVMBase):
                 raise rally_exceptions.ScriptError(
                     message=f"Guest did not reach SHUTOFF within {timeout_seconds} seconds"
                 )
+            return self._build_result_payload(
+                "CIChurn.boot_autonomous_vm",
+                str(result.get("status", "unknown")),
+                summary,
+                self._result_metrics(result),
+                {
+                    "artifact_refs": result.get("artifact_refs", []),
+                    "result_object_name": result.get("diagnostics", {}).get("result_object_name", ""),
+                },
+                diagnostics=dict(result.get("diagnostics", {}) or {}),
+                extra={
+                    "wave": result.get("wave", wave),
+                    "iteration": result.get("iteration", iteration),
+                    "hostname": result.get("hostname", ""),
+                },
+            )
         finally:
             self._delete_vm(vm_state, force_delete)
 
@@ -903,11 +1053,42 @@ class SpikyAutonomousVM(_AutonomousVMBase):
         if duration_seconds > 0:
             effective_lpm = round(int(summary["launched_vms"]) * 60.0 / duration_seconds, 3)
         summary["effective_launches_per_minute"] = effective_lpm
-        self.add_output(complete=self._build_summary_output(summary))
+        metric_rows = self._multi_vm_metric_rows(summary, vm_rows, workload_mix)
+        self.add_output(complete=build_summary_output(summary))
+        if metric_rows:
+            self.add_output(complete=build_metrics_output(metric_rows))
+        self.add_output(complete=build_phase_output(self.atomic_actions()))
+        self.add_output(complete=build_artifacts_output(self._artifact_rows_for_container(artifact_container)))
         self.add_output(complete=self._build_timeline_output(timeline_rows))
         self.add_output(complete=self._build_vm_output(vm_rows))
         if errors:
+            failure_rows = [[reason, errors.count(reason)] for reason in sorted(set(errors))]
+            self.add_output(complete=build_failure_reason_output(failure_rows))
+        if errors:
             raise rally_exceptions.ScriptError(message="; ".join(errors[:5]))
+        return self._build_result_payload(
+            scenario_name,
+            "success",
+            summary,
+            {
+                "duration_stats_seconds": summarize_numeric_series(
+                    [
+                        float(row[2])
+                        for row in vm_rows
+                        if len(row) > 2 and isinstance(row[2], (int, float))
+                    ]
+                ),
+                "effective_launches_per_minute": summary.get("effective_launches_per_minute", 0),
+                "drop_rate": round(
+                    int(summary.get("dropped_launches", 0) or 0)
+                    / max(int(summary.get("launched_vms", 0) or 0), 1),
+                    3,
+                ),
+            },
+            {"artifact_container": artifact_container},
+            diagnostics={"error_count": len(errors)},
+            extra={"timeline_rows": len(timeline_rows), "vm_results": len(vm_rows)},
+        )
 
 
 @types.convert(image={"type": "glance_image"}, flavor={"type": "nova_flavor"})
@@ -921,14 +1102,6 @@ class SpikyAutonomousVM(_AutonomousVMBase):
 )
 class QuotaEdgeAutonomousVM(_AutonomousVMBase):
     """Launch autonomous runners until the control plane starts refusing them."""
-
-    def _build_failure_reason_output(self, rows: list[list[object]]) -> dict[str, object]:
-        return build_table_output(
-            "Launch failures",
-            "Aggregated launch failure reasons observed during quota-edge probing",
-            ["reason", "count"],
-            rows,
-        )
 
     def run(
         self,
@@ -1005,6 +1178,9 @@ class QuotaEdgeAutonomousVM(_AutonomousVMBase):
             "launch_failures": 0,
             "peak_active_vms": 0,
             "stop_reason": "duration_reached",
+            "first_failure_offset_seconds": "",
+            "first_failure_reason": "",
+            "launches_before_first_failure": "",
         }
         consecutive_launch_failures = 0
         start = time.monotonic()
@@ -1133,6 +1309,10 @@ class QuotaEdgeAutonomousVM(_AutonomousVMBase):
                             summary["launch_failures"] += 1
                             reason = str(exc)
                             failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
+                            if not summary["first_failure_reason"]:
+                                summary["first_failure_reason"] = reason
+                                summary["first_failure_offset_seconds"] = round(next_tick - start, 3)
+                                summary["launches_before_first_failure"] = int(summary["launched_vms"])
                             if consecutive_launch_failures >= max_consecutive_launch_failures:
                                 summary["stop_reason"] = "launch_failures"
                                 deadline = next_tick
@@ -1157,13 +1337,21 @@ class QuotaEdgeAutonomousVM(_AutonomousVMBase):
                 self._delete_vm(vm_state, force_delete)
 
         failure_rows = [[reason, count] for reason, count in sorted(failure_reasons.items())]
-        self.add_output(complete=build_table_output(
-            "Quota-edge summary",
-            "Aggregate counters for quota-edge probing",
-            ["key", "value"],
-            [[key, str(summary[key])] for key in sorted(summary)],
-        ))
-        self.add_output(complete=self._build_failure_reason_output(failure_rows))
+        metric_rows = self._multi_vm_metric_rows(summary, vm_rows)
+        if failure_rows:
+            metric_rows.extend(
+                [
+                    ["first_failure_reason", str(summary["first_failure_reason"])],
+                    ["first_failure_offset_seconds", str(summary["first_failure_offset_seconds"])],
+                    ["launches_before_first_failure", str(summary["launches_before_first_failure"])],
+                ]
+            )
+        self.add_output(complete=build_summary_output(summary))
+        if metric_rows:
+            self.add_output(complete=build_metrics_output(metric_rows))
+        self.add_output(complete=build_phase_output(self.atomic_actions()))
+        self.add_output(complete=build_artifacts_output(self._artifact_rows_for_container(artifact_container)))
+        self.add_output(complete=build_failure_reason_output(failure_rows))
         self.add_output(complete=build_table_output(
             "VM results",
             "Per-VM result summary",
@@ -1172,3 +1360,21 @@ class QuotaEdgeAutonomousVM(_AutonomousVMBase):
         ))
         if errors:
             raise rally_exceptions.ScriptError(message="; ".join(errors[:5]))
+        return self._build_result_payload(
+            scenario_name,
+            "success",
+            summary,
+            {
+                "duration_stats_seconds": summarize_numeric_series(
+                    [
+                        float(row[2])
+                        for row in vm_rows
+                        if len(row) > 2 and isinstance(row[2], (int, float))
+                    ]
+                ),
+                "failure_reasons": {str(reason): int(count) for reason, count in failure_rows},
+            },
+            {"artifact_container": artifact_container},
+            diagnostics={"error_count": len(errors)},
+            extra={"vm_results": len(vm_rows)},
+        )
