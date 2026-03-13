@@ -1,0 +1,74 @@
+{% set title = title or "Distributed FIO benchmark" %}
+{% set description = description or "Controller/worker fio benchmark with attached block devices" %}
+{% set cloud_cfg = cloud or {} %}
+{% set network_cfg = network or {} %}
+{% set controller_cfg = controller or {} %}
+{% set cinder_cfg = cinder or {} %}
+{% set fio_cfg = fio or {} %}
+{% set artifacts_cfg = artifacts or {} %}
+---
+version: 2
+title: "{{ title }}"
+description: "{{ description }}"
+tags:
+  - rally
+  - openstack
+  - fio
+  - cinder
+  - distributed
+subtasks:
+  - title: "Distributed FIO run"
+    description: "Boot one controller, boot fio workers, attach Cinder volumes, and run the fio matrix"
+    contexts:
+      network@openstack:
+        start_cidr: "{{ network_cfg.start_cidr or '10.77.0.0/22' }}"
+        networks_per_tenant: 1
+        subnets_per_network: 1
+{% if network_cfg.dns_nameservers %}
+        dns_nameservers:
+{% for dns_nameserver in network_cfg.dns_nameservers %}
+          - "{{ dns_nameserver }}"
+{% endfor %}
+{% endif %}
+        router:
+          external_gateway_info:
+            network_id: "{{ cloud_cfg.external_network_id }}"
+    scenario:
+      CIChurn.fio_distributed:
+        controller_image:
+          name: "{{ cloud_cfg.controller_image_name or cloud_cfg.image_name }}"
+        controller_flavor:
+          name: "{{ cloud_cfg.controller_flavor_name or cloud_cfg.flavor_name }}"
+        worker_image:
+          name: "{{ cloud_cfg.worker_image_name or cloud_cfg.controller_image_name or cloud_cfg.image_name }}"
+        worker_flavor:
+          name: "{{ cloud_cfg.worker_flavor_name or cloud_cfg.controller_flavor_name or cloud_cfg.flavor_name }}"
+        external_network_name: "{{ cloud_cfg.external_network_name }}"
+        ssh_user: "{{ controller_cfg.ssh_user or 'ubuntu' }}"
+        ssh_connect_timeout_seconds: {{ controller_cfg.ssh_connect_timeout_seconds or 300 }}
+        command_timeout_seconds: {{ controller_cfg.command_timeout_seconds or 0 }}
+        volume_size_gib: {{ cinder_cfg.volume_size_gib or 10 }}
+{% if cinder_cfg.volume_type is defined and cinder_cfg.volume_type is not none %}
+        volume_type: "{{ cinder_cfg.volume_type }}"
+{% else %}
+        volume_type: null
+{% endif %}
+        client_counts: {{ fio_cfg.client_counts or [1, 2] }}
+        volumes_per_client: {{ fio_cfg.volumes_per_client or [1] }}
+        rw_modes: {{ fio_cfg.rw_modes or ['write', 'read'] }}
+        block_sizes: {{ fio_cfg.block_sizes or ['1M'] }}
+        numjobs: {{ fio_cfg.numjobs or [1, 2] }}
+        iodepths: {{ fio_cfg.iodepths or [1, 32] }}
+        runtime_seconds: {{ fio_cfg.runtime_seconds or 30 }}
+        ramp_time_seconds: {{ fio_cfg.ramp_time_seconds or 5 }}
+        fio_port: {{ fio_cfg.fio_port or 8765 }}
+        ioengine: "{{ fio_cfg.ioengine or 'io_uring' }}"
+        artifacts_root_dir: "{{ artifacts_cfg.root_dir or 'artifacts' }}"
+    runner:
+      constant:
+        times: 1
+        concurrency: 1
+        timeout: {{ controller_cfg.command_timeout_seconds or 0 if (controller_cfg.command_timeout_seconds or 0) > 0 else 86400 }}
+    sla:
+      failure_rate:
+        max: 0

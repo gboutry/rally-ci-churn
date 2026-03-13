@@ -20,6 +20,7 @@ Supported presets:
   steady
   spiky
   stress-ng
+  fio-distributed
   failure-storm
   quota-edge
   tenant-churn

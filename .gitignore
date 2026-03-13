@@ -43,6 +43,7 @@ htmlcov/
 *.log
 *.tmp
 *.bak
+artifacts/
 images/*/*.img
 images/*/cloud-init/
 images/*/imagecraft_volumes/
@@ -60,6 +61,7 @@ args/smoke.yaml
 args/steady.yaml
 args/spiky.yaml
 args/stress-ng.yaml
+args/fio-distributed.yaml
 args/failure-storm.yaml
 args/quota-edge.yaml
 args/tenant-churn.yaml

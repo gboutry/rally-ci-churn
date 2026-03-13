@@ -23,6 +23,7 @@ SUPPORTED_PRESETS = {
     "steady",
     "spiky",
     "stress-ng",
+    "fio-distributed",
     "failure-storm",
     "quota-edge",
     "tenant-churn",
@@ -248,6 +249,50 @@ def _build_stress_ng_preset(clouds_yaml: Path, config: dict[str, object]) -> tup
     return rendered, "tasks/autonomous_vm_waves.yaml.j2"
 
 
+def _build_fio_distributed_preset(
+    clouds_yaml: Path,
+    config: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    rendered = _build_base_args(clouds_yaml, config)
+    rendered["title"] = "Distributed FIO benchmark"
+    rendered["description"] = "Controller/worker fio benchmark with attached block devices"
+    rendered["cloud"] = {
+        "controller_image_name": _pick_custom_image(clouds_yaml, "ubuntu-fio"),
+        "controller_flavor_name": "m1.small",
+        "worker_image_name": "ubuntu-fio",
+        "worker_flavor_name": "m1.small",
+        "external_network_name": rendered["cloud"]["external_network_name"],
+        "external_network_id": rendered["cloud"]["external_network_id"],
+    }
+    rendered["network"]["start_cidr"] = "10.77.0.0/22"
+    rendered["controller"] = {
+        "ssh_user": "ubuntu",
+        "ssh_connect_timeout_seconds": 300,
+        "command_timeout_seconds": 0,
+    }
+    rendered["cinder"] = {
+        "volume_size_gib": 10,
+        "volume_type": None,
+    }
+    rendered["fio"] = {
+        "client_counts": [1, 2],
+        "volumes_per_client": [1],
+        "rw_modes": ["write", "read"],
+        "block_sizes": ["1M"],
+        "numjobs": [1, 2],
+        "iodepths": [1, 32],
+        "runtime_seconds": 30,
+        "ramp_time_seconds": 5,
+        "fio_port": 8765,
+        "ioengine": "io_uring",
+    }
+    rendered["artifacts"] = {"root_dir": "artifacts"}
+    rendered.pop("storage", None)
+    rendered.pop("workload", None)
+    rendered.pop("image_prep", None)
+    return rendered, "tasks/fio_distributed.yaml.j2"
+
+
 def _build_failure_storm_preset(
     clouds_yaml: Path,
     config: dict[str, object],
@@ -380,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
             "steady": _build_steady_preset,
             "spiky": _build_spiky_preset,
             "stress-ng": _build_stress_ng_preset,
+            "fio-distributed": _build_fio_distributed_preset,
             "failure-storm": _build_failure_storm_preset,
             "quota-edge": _build_quota_edge_preset,
             "tenant-churn": _build_tenant_churn_preset,

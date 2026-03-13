@@ -1,0 +1,32 @@
+title: "Distributed FIO benchmark"
+description: "Controller/worker fio benchmark with attached block devices"
+cloud:
+  controller_image_name: "ubuntu-fio"
+  controller_flavor_name: "m1.small"
+  worker_image_name: "ubuntu-fio"
+  worker_flavor_name: "m1.small"
+  external_network_name: "external-network"
+  external_network_id: "REPLACE_ME"
+network:
+  start_cidr: "10.77.0.0/22"
+  dns_nameservers: []
+controller:
+  ssh_user: "ubuntu"
+  ssh_connect_timeout_seconds: 300
+  command_timeout_seconds: 0
+cinder:
+  volume_size_gib: 10
+  volume_type: null
+fio:
+  client_counts: [1, 2]
+  volumes_per_client: [1]
+  rw_modes: ["write", "read"]
+  block_sizes: ["1M"]
+  numjobs: [1, 2]
+  iodepths: [1, 32]
+  runtime_seconds: 30
+  ramp_time_seconds: 5
+  fio_port: 8765
+  ioengine: "io_uring"
+artifacts:
+  root_dir: "artifacts"

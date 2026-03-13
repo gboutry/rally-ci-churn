@@ -33,6 +33,11 @@ No floating IPs or SSH are required for the main benchmark path.
   - no-FIP, no-SSH autonomous runner lifecycle
   - launches until quota or scheduler failures accumulate
   - records launch failure reasons instead of stopping on the first one
+- `CIChurn.fio_distributed`
+  - one controller VM with a floating IP and SSH access
+  - many worker VMs running `fio --server`
+  - raw Cinder volumes attached to each worker
+  - artifacts copied back locally to the Rally host
 
 The primary task templates are:
 
@@ -40,6 +45,7 @@ The primary task templates are:
 - `tasks/spiky_autonomous_vm.yaml.j2`
 - `tasks/quota_edge_autonomous_vm.yaml.j2`
 - `tasks/tenant_churn_autonomous_vm.yaml.j2`
+- `tasks/fio_distributed.yaml.j2`
 
 Sunbeam should normally use the generated preset args under `args/*.yaml`
 rather than editing example files by hand.
@@ -86,6 +92,7 @@ Other ready-to-run Sunbeam presets:
 ./scripts/setup_uv.sh /path/to/clouds.yaml failure-storm
 ./scripts/setup_uv.sh /path/to/clouds.yaml quota-edge
 ./scripts/setup_uv.sh /path/to/clouds.yaml tenant-churn
+./scripts/setup_uv.sh /path/to/clouds.yaml fio-distributed
 ```
 
 The generated args files are:
@@ -96,6 +103,7 @@ The generated args files are:
 - `args/failure-storm.yaml`
 - `args/quota-edge.yaml`
 - `args/tenant-churn.yaml`
+- `args/fio-distributed.yaml`
 
 Preset intent:
 
@@ -111,6 +119,12 @@ Preset intent:
   - launches until the cloud starts rejecting requests repeatedly
 - `tenant-churn`
   - repeats short-lived users/projects/networks around small VM batches
+- `fio-distributed`
+  - boots one fio controller with a floating IP
+  - boots fio worker VMs on a large tenant network
+  - attaches raw Cinder volumes to workers
+  - SSHes into the controller to run an explicit fio matrix
+  - pulls results back to the Rally host under `artifacts/<task-id>/fio-distributed/`
 
 The `stress-ng` preset is image-backed:
 
@@ -258,4 +272,80 @@ openstack image show ubuntu-stress-ng -f yaml
 The `stress-ng` preset expects:
 
 - Glance image name: `ubuntu-stress-ng`
+
+## Distributed fio scenario
+
+The fio scenario is a separate orchestration model from the autonomous runner
+benchmarks:
+
+1. Rally creates a large tenant network using `network@openstack`.
+2. Rally boots one controller VM with a floating IP.
+3. Rally boots worker VMs without floating IPs.
+4. Rally creates and attaches raw Cinder volumes to the workers.
+5. Workers start `fio --server`.
+6. Rally SSHes to the controller and runs the fio matrix from there.
+7. The controller writes the full artifact bundle locally.
+8. Rally copies the artifact bundle back to the host instead of uploading it to Swift.
+
+The generated `fio-distributed` preset is intentionally small and smoke-oriented:
+
+- `client_counts: [1, 2]`
+- `volumes_per_client: [1]`
+- `rw_modes: ["write", "read"]`
+- `block_sizes: ["1M"]`
+- `numjobs: [1, 2]`
+- `iodepths: [1, 32]`
+
+Run it with:
+
+```bash
+./scripts/setup_uv.sh /path/to/clouds.yaml fio-distributed
+source .venv/bin/activate
+source adminrc
+rally task validate tasks/fio_distributed.yaml.j2 \
+  --task-args-file args/fio-distributed.yaml
+rally task start tasks/fio_distributed.yaml.j2 \
+  --task-args-file args/fio-distributed.yaml
+```
+
+The task writes its local artifacts under:
+
+- `artifacts/<task-id>/fio-distributed/`
+
+Expected files include:
+
+- `summary.md`
+- `summary.csv`
+- `summary.json`
+- `manifest.json`
+- `inventory.json`
+- `raw/*.json`
+- `raw/*.stdout`
+
+### Building the `ubuntu-fio` image
+
+The distributed fio scenario expects a pre-baked image named `ubuntu-fio`.
+
+Build it with Imagecraft:
+
+```bash
+./scripts/build_imagecraft_vm.sh images/ubuntu-fio
+```
+
+Upload it to Glance:
+
+```bash
+openstack image create ubuntu-fio \
+  --file images/ubuntu-fio/disk.img \
+  --disk-format raw \
+  --container-format bare \
+  --public
+```
+
+Set the required image property:
+
+```bash
+openstack image set ubuntu-fio \
+  --property hw_firmware_type=uefi
+```
 - flavor name: `m1.stress-ng`
