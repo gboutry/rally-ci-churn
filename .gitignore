@@ -56,6 +56,13 @@ adminrc
 args/local*.yaml
 args/*.local.yaml
 args/*.secret.yaml
+args/smoke.yaml
+args/steady.yaml
+args/spiky.yaml
+args/stress-ng.yaml
+args/failure-storm.yaml
+args/quota-edge.yaml
+args/tenant-churn.yaml
 
 # imagecraft artifacts
 *.img

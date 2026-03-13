@@ -1,10 +1,11 @@
 {% set title = title or "Rally CI churn" %}
-{% set description = description or "Autonomous CI-like runner churn without floating IPs" %}
+{% set description = description or "Autonomous CI runner churn across short-lived tenants" %}
 {% set scenario_cfg = scenario or {} %}
 {% set cloud_cfg = cloud or {} %}
 {% set network_cfg = network or {} %}
 {% set storage_cfg = storage or {} %}
 {% set workload_cfg = workload or {} %}
+{% set tenant_cfg = tenant_churn or {} %}
 ---
 version: 2
 title: "{{ title }}"
@@ -15,11 +16,15 @@ tags:
   - ci
   - churn
   - autonomous
+  - tenant-churn
 subtasks:
-{% for wave in range((scenario_cfg.waves or 1) | int) %}
-  - title: "Wave {{ wave + 1 }}/{{ scenario_cfg.waves or 1 }}"
-    description: "Launch {{ scenario_cfg.concurrency or 1 }} autonomous runners in parallel"
+{% for cycle in range((tenant_cfg.cycles or 10) | int) %}
+  - title: "Tenant cycle {{ cycle + 1 }}/{{ tenant_cfg.cycles or 10 }}"
+    description: "Create a short-lived tenant, network, and {{ tenant_cfg.vms_per_cycle or 2 }} autonomous runners"
     contexts:
+      users@openstack:
+        tenants: 1
+        users_per_tenant: 1
       network@openstack:
         networks_per_tenant: 1
         subnets_per_network: 1
@@ -38,7 +43,7 @@ subtasks:
           name: "{{ cloud_cfg.image_name }}"
         flavor:
           name: "{{ cloud_cfg.flavor_name }}"
-        wave: {{ wave + 1 }}
+        wave: {{ cycle + 1 }}
         workload_profile: "{{ workload_cfg.profile or 'smoke' }}"
         workload_params: {{ workload_cfg.params or {} }}
         artifact_container: "{{ storage_cfg.artifact_container or 'rally-ci-churn' }}"
@@ -59,8 +64,8 @@ subtasks:
         allow_guest_timeouts: {{ scenario_cfg.allow_guest_timeouts or false }}
     runner:
       constant:
-        times: {{ scenario_cfg.concurrency or 1 }}
-        concurrency: {{ scenario_cfg.concurrency or 1 }}
+        times: {{ tenant_cfg.vms_per_cycle or 2 }}
+        concurrency: {{ tenant_cfg.vms_per_cycle or 2 }}
         timeout: {{ scenario_cfg.timeout_seconds or 3600 if (scenario_cfg.timeout_seconds or 3600) > 0 else 86400 }}
     sla:
       failure_rate:

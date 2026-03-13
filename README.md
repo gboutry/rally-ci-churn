@@ -29,16 +29,20 @@ No floating IPs or SSH are required for the main benchmark path.
   - launches VMs over a time-based burst schedule
   - caps live VMs with `max_active_vms`
   - drops launches that would exceed the cap
+- `CIChurn.quota_edge_autonomous_vm`
+  - no-FIP, no-SSH autonomous runner lifecycle
+  - launches until quota or scheduler failures accumulate
+  - records launch failure reasons instead of stopping on the first one
 
 The primary task templates are:
 
 - `tasks/autonomous_vm_waves.yaml.j2`
 - `tasks/spiky_autonomous_vm.yaml.j2`
+- `tasks/quota_edge_autonomous_vm.yaml.j2`
+- `tasks/tenant_churn_autonomous_vm.yaml.j2`
 
-The primary example args files are:
-
-- `args/autonomous_vm.example.yaml`
-- `args/spiky_autonomous_vm.example.yaml`
+Sunbeam should normally use the generated preset args under `args/*.yaml`
+rather than editing example files by hand.
 
 ## Fast start
 
@@ -52,7 +56,7 @@ This assumes:
 Bootstrap:
 
 ```bash
-./scripts/setup_uv.sh /path/to/clouds.yaml
+./scripts/setup_uv.sh /path/to/clouds.yaml smoke
 source .venv/bin/activate
 source adminrc
 ```
@@ -68,22 +72,54 @@ Validate and run:
 
 ```bash
 rally task validate tasks/autonomous_vm_waves.yaml.j2 \
-  --task-args-file args/sunbeam.local.yaml
+  --task-args-file args/smoke.yaml
 
 rally task start tasks/autonomous_vm_waves.yaml.j2 \
-  --task-args-file args/sunbeam.local.yaml
+  --task-args-file args/smoke.yaml
 ```
 
-For the spiky variant:
+Other ready-to-run Sunbeam presets:
 
 ```bash
-./scripts/setup_uv.sh /path/to/clouds.yaml spiky_autonomous_vm
+./scripts/setup_uv.sh /path/to/clouds.yaml steady
+./scripts/setup_uv.sh /path/to/clouds.yaml spiky
+./scripts/setup_uv.sh /path/to/clouds.yaml failure-storm
+./scripts/setup_uv.sh /path/to/clouds.yaml quota-edge
+./scripts/setup_uv.sh /path/to/clouds.yaml tenant-churn
+```
 
-rally task validate tasks/spiky_autonomous_vm.yaml.j2 \
-  --task-args-file args/sunbeam.local.yaml
+The generated args files are:
 
-rally task start tasks/spiky_autonomous_vm.yaml.j2 \
-  --task-args-file args/sunbeam.local.yaml
+- `args/smoke.yaml`
+- `args/steady.yaml`
+- `args/spiky.yaml`
+- `args/failure-storm.yaml`
+- `args/quota-edge.yaml`
+- `args/tenant-churn.yaml`
+
+Preset intent:
+
+- `smoke`
+  - one VM, one result upload, fastest end-to-end validation
+- `steady`
+  - fixed waves of synthetic CI work
+- `spiky`
+  - bursty arrival schedule using the spiky controller
+- `failure-storm`
+  - bursty arrivals with injected guest `fail_fast` and `hang` behaviors
+- `quota-edge`
+  - launches until the cloud starts rejecting requests repeatedly
+- `tenant-churn`
+  - repeats short-lived users/projects/networks around small VM batches
+
+The `stress-ng` preset is image-backed:
+
+```bash
+./scripts/setup_uv.sh /path/to/clouds.yaml stress-ng
+rally task validate tasks/autonomous_vm_waves.yaml.j2 \
+  --task-args-file args/stress-ng.yaml
+rally task start tasks/autonomous_vm_waves.yaml.j2 \
+  --task-args-file args/stress-ng.yaml
 ```
 
 ## Bootstrap behavior
@@ -105,7 +141,7 @@ The Sunbeam bootstrap currently discovers:
 
 It writes:
 
-- `args/sunbeam.local.yaml`
+- `args/<preset>.yaml`
 - `adminrc`
 
 ## Project layout
@@ -180,3 +216,6 @@ The recipe follows a minimal bootable classic-image layout:
 
 The resulting `disk.img` is local-only for now; Glance upload and cloud boot
 validation remain separate manual steps.
+
+The `stress-ng` preset expects the uploaded Glance image to be named
+`ubuntu-stress-ng`.

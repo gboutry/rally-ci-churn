@@ -41,6 +41,7 @@ subtasks:
           name: "{{ cloud_cfg.flavor_name }}"
         workload_profile: "{{ workload_cfg.profile or 'smoke' }}"
         workload_params: {{ workload_cfg.params or {} }}
+        workload_mix: {{ workload_cfg.mix or [] }}
         artifact_container: "{{ storage_cfg.artifact_container or 'rally-ci-churn' }}"
         artifact_ttl_seconds: {{ storage_cfg.artifact_ttl_seconds or 0 }}
         swift_auth_url: "{{ storage_cfg.swift_auth_url }}"
@@ -55,6 +56,8 @@ subtasks:
         timeout_seconds: {{ scenario_cfg.timeout_seconds or 3600 }}
         timeout_mode: "{{ scenario_cfg.timeout_mode or 'fail' }}"
         console_log_length: {{ scenario_cfg.console_log_length or 400 }}
+        allow_guest_errors: {{ scenario_cfg.allow_guest_errors or false }}
+        allow_guest_timeouts: {{ scenario_cfg.allow_guest_timeouts or false }}
         duration_seconds: {{ schedule_cfg.duration_seconds or 300 }}
         max_active_vms: {{ schedule_cfg.max_active_vms or 10 }}
         baseline_launches_per_minute: {{ schedule_cfg.baseline_launches_per_minute or 12 }}

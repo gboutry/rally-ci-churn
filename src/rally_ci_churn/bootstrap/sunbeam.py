@@ -17,8 +17,16 @@ from urllib.parse import urlparse
 import yaml
 
 
-DEFAULT_SCENARIO = "autonomous_vm"
-SPIKY_SCENARIO = "spiky_autonomous_vm"
+DEFAULT_PRESET = "smoke"
+SUPPORTED_PRESETS = {
+    "smoke",
+    "steady",
+    "spiky",
+    "stress-ng",
+    "failure-storm",
+    "quota-edge",
+    "tenant-churn",
+}
 
 
 def _run_openstack(clouds_yaml: Path, cloud_name: str, *args: str) -> str:
@@ -101,7 +109,7 @@ def _select_sunbeam_dns(clouds_yaml: Path) -> list[str]:
         return []
 
 
-def _build_autonomous_vm_args(clouds_yaml: Path, config: dict[str, object]) -> dict[str, object]:
+def _build_base_args(clouds_yaml: Path, config: dict[str, object]) -> dict[str, object]:
     sunbeam = config["clouds"]["sunbeam"]
     image_names = _run_openstack(clouds_yaml, "sunbeam-admin", "image", "list", "-f", "value", "-c", "Name").splitlines()
     flavor_names = _run_openstack(clouds_yaml, "sunbeam-admin", "flavor", "list", "-f", "value", "-c", "Name").splitlines()
@@ -130,6 +138,8 @@ def _build_autonomous_vm_args(clouds_yaml: Path, config: dict[str, object]) -> d
             "timeout_seconds": 3600,
             "timeout_mode": "fail",
             "console_log_length": 400,
+            "allow_guest_errors": False,
+            "allow_guest_timeouts": False,
         },
         "cloud": {
             "image_name": image_name,
@@ -166,11 +176,35 @@ def _build_autonomous_vm_args(clouds_yaml: Path, config: dict[str, object]) -> d
     }
 
 
-def _build_spiky_autonomous_vm_args(
-    clouds_yaml: Path,
-    config: dict[str, object],
-) -> dict[str, object]:
-    rendered = _build_autonomous_vm_args(clouds_yaml, config)
+def _pick_custom_image(clouds_yaml: Path, desired_name: str) -> str:
+    image_names = _run_openstack(
+        clouds_yaml, "sunbeam-admin", "image", "list", "-f", "value", "-c", "Name"
+    ).splitlines()
+    if desired_name in image_names:
+        return desired_name
+    raise RuntimeError(
+        f"Required image '{desired_name}' was not found. Build and upload it before using this preset."
+    )
+
+
+def _build_smoke_preset(clouds_yaml: Path, config: dict[str, object]) -> tuple[dict[str, object], str]:
+    rendered = _build_base_args(clouds_yaml, config)
+    rendered["description"] = "Autonomous CI-like runner churn smoke"
+    rendered["workload"]["profile"] = "smoke"
+    return rendered, "tasks/autonomous_vm_waves.yaml.j2"
+
+
+def _build_steady_preset(clouds_yaml: Path, config: dict[str, object]) -> tuple[dict[str, object], str]:
+    rendered = _build_base_args(clouds_yaml, config)
+    rendered["description"] = "Autonomous CI-like runner churn with steady waves"
+    rendered["scenario"]["waves"] = 5
+    rendered["scenario"]["concurrency"] = 5
+    rendered["workload"]["profile"] = "synthetic_ci"
+    return rendered, "tasks/autonomous_vm_waves.yaml.j2"
+
+
+def _build_spiky_preset(clouds_yaml: Path, config: dict[str, object]) -> tuple[dict[str, object], str]:
+    rendered = _build_base_args(clouds_yaml, config)
     rendered["description"] = "Autonomous CI-like runner churn with a spiky arrival schedule"
     rendered["scenario"] = {
         "family": "autonomous_vm",
@@ -178,22 +212,119 @@ def _build_spiky_autonomous_vm_args(
         "timeout_seconds": 3600,
         "timeout_mode": "fail",
         "console_log_length": 400,
+        "allow_guest_errors": False,
+        "allow_guest_timeouts": False,
     }
     rendered["schedule"] = {
-        "duration_seconds": 60,
-        "max_active_vms": 2,
-        "baseline_launches_per_minute": 6,
+        "duration_seconds": 300,
+        "max_active_vms": 10,
+        "baseline_launches_per_minute": 12,
         "launch_tick_seconds": 1,
         "burst_windows": [
+            {"start_second": 30, "end_second": 60, "launch_rate_multiplier": 4.0},
+            {"start_second": 150, "end_second": 180, "launch_rate_multiplier": 2.5},
+        ],
+    }
+    rendered["workload"]["profile"] = "synthetic_ci"
+    return rendered, "tasks/spiky_autonomous_vm.yaml.j2"
+
+
+def _build_stress_ng_preset(clouds_yaml: Path, config: dict[str, object]) -> tuple[dict[str, object], str]:
+    rendered = _build_base_args(clouds_yaml, config)
+    rendered["description"] = "Autonomous stress-ng runner churn on a pre-baked image"
+    rendered["cloud"]["image_name"] = _pick_custom_image(clouds_yaml, "ubuntu-stress-ng")
+    rendered["cloud"]["flavor_name"] = "m1.stress-ng"
+    rendered["scenario"]["waves"] = 1
+    rendered["scenario"]["concurrency"] = 3
+    rendered["workload"] = {
+        "profile": "stress_ng",
+        "params": {
+            "duration_seconds": 120,
+            "cpu_workers": 2,
+            "vm_workers": 1,
+            "vm_bytes": "256M",
+        },
+    }
+    return rendered, "tasks/autonomous_vm_waves.yaml.j2"
+
+
+def _build_failure_storm_preset(
+    clouds_yaml: Path,
+    config: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    rendered = _build_base_args(clouds_yaml, config)
+    rendered["description"] = "Spiky autonomous runner churn with injected guest failures and hangs"
+    rendered["scenario"] = {
+        "family": "autonomous_vm",
+        "name": "CIChurn.spiky_autonomous_vm",
+        "timeout_seconds": 180,
+        "timeout_mode": "fail",
+        "console_log_length": 400,
+        "allow_guest_errors": True,
+        "allow_guest_timeouts": True,
+    }
+    rendered["schedule"] = {
+        "duration_seconds": 180,
+        "max_active_vms": 8,
+        "baseline_launches_per_minute": 10,
+        "launch_tick_seconds": 1,
+        "burst_windows": [{"start_second": 45, "end_second": 90, "launch_rate_multiplier": 3.0}],
+    }
+    rendered["workload"] = {
+        "profile": "synthetic_ci",
+        "params": {},
+        "mix": [
+            {"profile": "synthetic_ci", "weight": 7, "params": {}},
+            {"profile": "synthetic_ci", "weight": 2, "params": {"failure_mode": "fail_fast"}},
             {
-                "start_second": 10,
-                "end_second": 20,
-                "launch_rate_multiplier": 4.0,
+                "profile": "synthetic_ci",
+                "weight": 1,
+                "params": {"failure_mode": "hang", "hang_seconds": 600},
             },
         ],
     }
+    return rendered, "tasks/spiky_autonomous_vm.yaml.j2"
+
+
+def _build_quota_edge_preset(
+    clouds_yaml: Path,
+    config: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    rendered = _build_base_args(clouds_yaml, config)
+    rendered["description"] = "Autonomous runner churn until quota or scheduler failures accumulate"
+    rendered["scenario"] = {
+        "family": "autonomous_vm",
+        "name": "CIChurn.quota_edge_autonomous_vm",
+        "timeout_seconds": 3600,
+        "timeout_mode": "fail",
+        "console_log_length": 400,
+        "allow_guest_errors": False,
+        "allow_guest_timeouts": False,
+    }
     rendered["workload"]["profile"] = "smoke"
-    return rendered
+    rendered["quota_edge"] = {
+        "duration_seconds": 900,
+        "launches_per_tick": 2,
+        "launch_tick_seconds": 1,
+        "max_consecutive_launch_failures": 10,
+    }
+    return rendered, "tasks/quota_edge_autonomous_vm.yaml.j2"
+
+
+def _build_tenant_churn_preset(
+    clouds_yaml: Path,
+    config: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    rendered = _build_base_args(clouds_yaml, config)
+    rendered["description"] = "Autonomous runner churn across short-lived tenants"
+    rendered["scenario"]["waves"] = 1
+    rendered["scenario"]["concurrency"] = 1
+    rendered["workload"]["profile"] = "smoke"
+    rendered["tenant_churn"] = {
+        "cycles": 10,
+        "vms_per_cycle": 2,
+    }
+    return rendered, "tasks/tenant_churn_autonomous_vm.yaml.j2"
 
 
 def _write_adminrc(path: Path, admin_cloud: dict[str, object]) -> None:
@@ -225,7 +356,7 @@ def _write_adminrc(path: Path, admin_cloud: dict[str, object]) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate Sunbeam benchmark args and adminrc.")
     parser.add_argument("--clouds-yaml", required=True)
-    parser.add_argument("--scenario", default=DEFAULT_SCENARIO)
+    parser.add_argument("--preset", default=DEFAULT_PRESET, choices=sorted(SUPPORTED_PRESETS))
     parser.add_argument("--output-args", required=True)
     parser.add_argument("--output-adminrc", required=True)
     return parser
@@ -244,14 +375,18 @@ def main(argv: list[str] | None = None) -> int:
             yaml.safe_dump(config, sort_keys=False),
             encoding="utf-8",
         )
-        if args.scenario == DEFAULT_SCENARIO:
-            rendered_args = _build_autonomous_vm_args(normalized_clouds_yaml, config)
-            task_path = "tasks/autonomous_vm_waves.yaml.j2"
-        elif args.scenario == SPIKY_SCENARIO:
-            rendered_args = _build_spiky_autonomous_vm_args(normalized_clouds_yaml, config)
-            task_path = "tasks/spiky_autonomous_vm.yaml.j2"
-        else:
-            raise RuntimeError(f"Unsupported scenario selector: {args.scenario}")
+        preset_builders = {
+            "smoke": _build_smoke_preset,
+            "steady": _build_steady_preset,
+            "spiky": _build_spiky_preset,
+            "stress-ng": _build_stress_ng_preset,
+            "failure-storm": _build_failure_storm_preset,
+            "quota-edge": _build_quota_edge_preset,
+            "tenant-churn": _build_tenant_churn_preset,
+        }
+        if args.preset not in preset_builders:
+            raise RuntimeError(f"Unsupported preset selector: {args.preset}")
+        rendered_args, task_path = preset_builders[args.preset](normalized_clouds_yaml, config)
         output_args.parent.mkdir(parents=True, exist_ok=True)
         output_adminrc.parent.mkdir(parents=True, exist_ok=True)
         output_args.write_text(yaml.safe_dump(rendered_args, sort_keys=False), encoding="utf-8")

@@ -313,6 +313,8 @@ class _AutonomousVMBase(nova_utils.NovaScenario):
             "server": server,
             "result_object_name": result_object_name,
             "launched_monotonic": time.monotonic(),
+            "workload_profile": workload_profile,
+            "workload_params": workload_params,
         }
 
     def _build_timeout_result(
@@ -363,6 +365,60 @@ class _AutonomousVMBase(nova_utils.NovaScenario):
             "diagnostics": {"error": error},
             "stages": [],
         }
+
+    def _normalize_workload_mix(
+        self,
+        workload_mix: list[dict[str, object]] | None,
+    ) -> list[dict[str, object]]:
+        normalized = []
+        for raw_item in workload_mix or []:
+            profile = str(raw_item.get("profile", "") or "")
+            weight = int(raw_item.get("weight", 0) or 0)
+            params = dict(raw_item.get("params", {}) or {})
+            if not profile:
+                raise rally_exceptions.ScriptError(message=f"Invalid workload mix item: {raw_item}")
+            if weight <= 0:
+                raise rally_exceptions.ScriptError(
+                    message=f"workload mix weight must be > 0: {raw_item}"
+                )
+            normalized.append({"profile": profile, "weight": weight, "params": params})
+        return normalized
+
+    def _select_workload(
+        self,
+        default_profile: str,
+        default_params: dict[str, object],
+        workload_mix: list[dict[str, object]],
+        launch_index: int,
+    ) -> tuple[str, dict[str, object]]:
+        if not workload_mix:
+            return default_profile, dict(default_params)
+        total_weight = sum(int(item["weight"]) for item in workload_mix)
+        cursor = launch_index % total_weight
+        for item in workload_mix:
+            weight = int(item["weight"])
+            if cursor < weight:
+                return str(item["profile"]), dict(item["params"])
+            cursor -= weight
+        return default_profile, dict(default_params)
+
+    def _summarize_result_row(
+        self,
+        server_name: str,
+        result: dict[str, object],
+    ) -> list[object]:
+        error = str(result.get("diagnostics", {}).get("error", ""))
+        artifact = ""
+        artifact_refs = result.get("artifact_refs", [])
+        if artifact_refs and isinstance(artifact_refs[0], dict):
+            artifact = str(artifact_refs[0].get("object_name", ""))
+        return [
+            server_name,
+            str(result.get("status", "unknown")),
+            result.get("duration_seconds", ""),
+            artifact,
+            error,
+        ]
 
     def _fetch_vm_result(
         self,
@@ -427,6 +483,8 @@ class BootAutonomousVM(_AutonomousVMBase):
         swift_cacert_b64="",
         workload_params=None,
         console_log_length=400,
+        allow_guest_errors=False,
+        allow_guest_timeouts=False,
         force_delete=False,
         wave=0,
         **kwargs,
@@ -492,11 +550,11 @@ class BootAutonomousVM(_AutonomousVMBase):
                 )
             self.add_output(complete=build_metadata_output(result))
             self.add_output(complete=build_stage_output(result))
-            if result.get("status") == "error":
+            if result.get("status") == "error" and not allow_guest_errors:
                 raise rally_exceptions.ScriptError(
                     message=str(result.get("diagnostics", {}).get("error", "Guest benchmark failed"))
                 )
-            if timed_out and timeout_mode == "fail":
+            if timed_out and timeout_mode == "fail" and not allow_guest_timeouts:
                 raise rally_exceptions.ScriptError(
                     message=f"Guest did not reach SHUTOFF within {timeout_seconds} seconds"
                 )
@@ -610,12 +668,16 @@ class SpikyAutonomousVM(_AutonomousVMBase):
         swift_region_name="",
         swift_cacert_b64="",
         workload_params=None,
+        workload_mix=None,
         console_log_length=400,
+        allow_guest_errors=False,
+        allow_guest_timeouts=False,
         force_delete=False,
         wave=0,
         **kwargs,
     ):
         workload_params = workload_params or {}
+        workload_mix = self._normalize_workload_mix(workload_mix)
         burst_windows = self._validate_burst_windows(burst_windows or [])
         duration_seconds = int(duration_seconds)
         max_active_vms = int(max_active_vms)
@@ -665,6 +727,7 @@ class SpikyAutonomousVM(_AutonomousVMBase):
         arrival_deadline = start + duration_seconds
         tokens = 0.0
         completed_since_tick = 0
+        launch_index = 0
 
         try:
             while True:
@@ -682,23 +745,13 @@ class SpikyAutonomousVM(_AutonomousVMBase):
                     if result:
                         status = str(result.get("status", "unknown"))
                         error = str(result.get("diagnostics", {}).get("error", ""))
-                        artifact = ""
-                        artifact_refs = result.get("artifact_refs", [])
-                        if artifact_refs and isinstance(artifact_refs[0], dict):
-                            artifact = str(artifact_refs[0].get("object_name", ""))
-                        vm_rows.append(
-                            [
-                                server.name,
-                                status,
-                                result.get("duration_seconds", ""),
-                                artifact,
-                                error,
-                            ]
-                        )
+                        vm_rows.append(self._summarize_result_row(server.name, result))
                         summary["completed_vms"] += 1
-                        if status == "error":
+                        if status == "error" and not allow_guest_errors:
                             summary["failed_vms"] += 1
                             errors.append(error or f"{server.name} returned an error result")
+                        elif status == "error":
+                            summary["failed_vms"] += 1
                         completed_since_tick += 1
                         self._delete_vm(vm_state, force_delete)
                         del active_vms[server_id]
@@ -722,23 +775,13 @@ class SpikyAutonomousVM(_AutonomousVMBase):
                             )
                         status = str(result.get("status", "unknown"))
                         error = str(result.get("diagnostics", {}).get("error", ""))
-                        artifact = ""
-                        artifact_refs = result.get("artifact_refs", [])
-                        if artifact_refs and isinstance(artifact_refs[0], dict):
-                            artifact = str(artifact_refs[0].get("object_name", ""))
-                        vm_rows.append(
-                            [
-                                server.name,
-                                status,
-                                result.get("duration_seconds", ""),
-                                artifact,
-                                error,
-                            ]
-                        )
+                        vm_rows.append(self._summarize_result_row(server.name, result))
                         summary["completed_vms"] += 1
-                        if status == "error":
+                        if status == "error" and not allow_guest_errors:
                             summary["failed_vms"] += 1
                             errors.append(error or f"{server.name} returned an error result")
+                        elif status == "error":
+                            summary["failed_vms"] += 1
                         completed_since_tick += 1
                         self._delete_vm(vm_state, force_delete)
                         del active_vms[server_id]
@@ -777,7 +820,7 @@ class SpikyAutonomousVM(_AutonomousVMBase):
                                 result["diagnostics"]["error"],
                             ]
                         )
-                        if timeout_mode == "fail":
+                        if timeout_mode == "fail" and not allow_guest_timeouts:
                             errors.append(f"{server.name} timed out after {timeout_seconds} seconds")
                         self._delete_vm(vm_state, force_delete)
                         del active_vms[server_id]
@@ -792,6 +835,12 @@ class SpikyAutonomousVM(_AutonomousVMBase):
                     dropped_this_tick = 0
                     while tokens >= 1.0:
                         if len(active_vms) < max_active_vms:
+                            selected_profile, selected_params = self._select_workload(
+                                workload_profile,
+                                workload_params,
+                                workload_mix,
+                                launch_index,
+                            )
                             vm_state = self._launch_runner_vm(
                                 image,
                                 flavor,
@@ -807,8 +856,8 @@ class SpikyAutonomousVM(_AutonomousVMBase):
                                 swift_interface,
                                 swift_region_name,
                                 swift_cacert_b64,
-                                workload_profile,
-                                workload_params,
+                                selected_profile,
+                                selected_params,
                                 iteration,
                                 wave,
                                 **kwargs,
@@ -816,6 +865,7 @@ class SpikyAutonomousVM(_AutonomousVMBase):
                             active_vms[vm_state["server"].id] = vm_state
                             summary["launched_vms"] += 1
                             launched_this_tick += 1
+                            launch_index += 1
                             summary["peak_active_vms"] = max(
                                 int(summary["peak_active_vms"]),
                                 len(active_vms),
@@ -856,5 +906,269 @@ class SpikyAutonomousVM(_AutonomousVMBase):
         self.add_output(complete=self._build_summary_output(summary))
         self.add_output(complete=self._build_timeline_output(timeline_rows))
         self.add_output(complete=self._build_vm_output(vm_rows))
+        if errors:
+            raise rally_exceptions.ScriptError(message="; ".join(errors[:5]))
+
+
+@types.convert(image={"type": "glance_image"}, flavor={"type": "nova_flavor"})
+@validation.add("required_services", services=[consts.Service.NOVA])
+@validation.add("image_valid_on_flavor", flavor_param="flavor", image_param="image")
+@validation.add("required_platform", platform="openstack", users=True)
+@scenario.configure(
+    name="CIChurn.quota_edge_autonomous_vm",
+    platform="openstack",
+    context={"cleanup@openstack": ["nova"], "network@openstack": {}},
+)
+class QuotaEdgeAutonomousVM(_AutonomousVMBase):
+    """Launch autonomous runners until the control plane starts refusing them."""
+
+    def _build_failure_reason_output(self, rows: list[list[object]]) -> dict[str, object]:
+        return build_table_output(
+            "Launch failures",
+            "Aggregated launch failure reasons observed during quota-edge probing",
+            ["reason", "count"],
+            rows,
+        )
+
+    def run(
+        self,
+        image,
+        flavor,
+        workload_profile,
+        artifact_container,
+        swift_auth_url,
+        swift_username,
+        swift_password,
+        swift_project_name,
+        swift_user_domain_name,
+        swift_project_domain_name,
+        duration_seconds=900,
+        launches_per_tick=2,
+        launch_tick_seconds=1,
+        max_consecutive_launch_failures=10,
+        timeout_seconds=3600,
+        timeout_mode="fail",
+        artifact_ttl_seconds=0,
+        swift_interface="public",
+        swift_region_name="",
+        swift_cacert_b64="",
+        workload_params=None,
+        console_log_length=400,
+        allow_guest_errors=False,
+        allow_guest_timeouts=False,
+        force_delete=False,
+        wave=0,
+        **kwargs,
+    ):
+        workload_params = workload_params or {}
+        duration_seconds = int(duration_seconds)
+        launches_per_tick = int(launches_per_tick)
+        launch_tick_seconds = max(1, int(launch_tick_seconds))
+        max_consecutive_launch_failures = int(max_consecutive_launch_failures)
+        if duration_seconds <= 0:
+            raise rally_exceptions.ScriptError(message="duration_seconds must be > 0")
+        if launches_per_tick <= 0:
+            raise rally_exceptions.ScriptError(message="launches_per_tick must be > 0")
+        if max_consecutive_launch_failures <= 0:
+            raise rally_exceptions.ScriptError(
+                message="max_consecutive_launch_failures must be > 0"
+            )
+
+        scenario_name = "CIChurn.quota_edge_autonomous_vm"
+        iteration = int(self.context.get("iteration", 0) or 0)
+        swift_context = self._build_ssl_context(swift_cacert_b64)
+        swift_token, swift_endpoint = self._authenticate_swift(
+            swift_auth_url,
+            swift_username,
+            swift_password,
+            swift_project_name,
+            swift_user_domain_name,
+            swift_project_domain_name,
+            swift_interface,
+            swift_region_name,
+            swift_context,
+        )
+
+        active_vms: dict[str, dict[str, object]] = {}
+        vm_rows: list[list[object]] = []
+        errors: list[str] = []
+        failure_reasons: dict[str, int] = {}
+        summary = {
+            "duration_seconds": duration_seconds,
+            "launches_per_tick": launches_per_tick,
+            "launch_tick_seconds": launch_tick_seconds,
+            "max_consecutive_launch_failures": max_consecutive_launch_failures,
+            "launched_vms": 0,
+            "completed_vms": 0,
+            "failed_vms": 0,
+            "timed_out_vms": 0,
+            "launch_failures": 0,
+            "peak_active_vms": 0,
+            "stop_reason": "duration_reached",
+        }
+        consecutive_launch_failures = 0
+        start = time.monotonic()
+        next_tick = start
+        deadline = start + duration_seconds
+
+        try:
+            while True:
+                now = time.monotonic()
+                for server_id, vm_state in list(active_vms.items()):
+                    server = self._show_server(vm_state["server"])
+                    vm_state["server"] = server
+                    result = self._read_swift_object(
+                        swift_endpoint,
+                        artifact_container,
+                        str(vm_state["result_object_name"]),
+                        swift_token,
+                        swift_context,
+                    )
+                    if result:
+                        status = str(result.get("status", "unknown"))
+                        error = str(result.get("diagnostics", {}).get("error", ""))
+                        vm_rows.append(self._summarize_result_row(server.name, result))
+                        summary["completed_vms"] += 1
+                        if status == "error" and not allow_guest_errors:
+                            summary["failed_vms"] += 1
+                            errors.append(error or f"{server.name} returned an error result")
+                        elif status == "error":
+                            summary["failed_vms"] += 1
+                        self._delete_vm(vm_state, force_delete)
+                        del active_vms[server_id]
+                    elif server.status == "SHUTOFF":
+                        result = self._fetch_vm_result(
+                            vm_state,
+                            artifact_container,
+                            console_log_length,
+                            swift_context,
+                            swift_token,
+                            swift_endpoint,
+                        )
+                        if not result:
+                            result = self._build_error_result(
+                                scenario_name,
+                                server,
+                                float(vm_state["launched_monotonic"]),
+                                wave,
+                                iteration,
+                                "Guest completed without emitting a structured result payload",
+                            )
+                        status = str(result.get("status", "unknown"))
+                        error = str(result.get("diagnostics", {}).get("error", ""))
+                        vm_rows.append(self._summarize_result_row(server.name, result))
+                        summary["completed_vms"] += 1
+                        if status == "error" and not allow_guest_errors:
+                            summary["failed_vms"] += 1
+                            errors.append(error or f"{server.name} returned an error result")
+                        elif status == "error":
+                            summary["failed_vms"] += 1
+                        self._delete_vm(vm_state, force_delete)
+                        del active_vms[server_id]
+                    elif server.status == "ERROR":
+                        summary["failed_vms"] += 1
+                        errors.append(f"{server.name} entered ERROR state before shutdown")
+                        vm_rows.append(
+                            [
+                                server.name,
+                                "error",
+                                round(time.monotonic() - float(vm_state["launched_monotonic"]), 3),
+                                "",
+                                "Server entered ERROR state before shutdown",
+                            ]
+                        )
+                        self._delete_vm(vm_state, force_delete)
+                        del active_vms[server_id]
+                    elif timeout_seconds > 0 and (
+                        time.monotonic() - float(vm_state["launched_monotonic"])
+                    ) >= int(timeout_seconds):
+                        summary["timed_out_vms"] += 1
+                        result = self._build_timeout_result(
+                            scenario_name,
+                            server,
+                            float(vm_state["launched_monotonic"]),
+                            wave,
+                            iteration,
+                        )
+                        vm_rows.append(
+                            [
+                                server.name,
+                                "timeout",
+                                result["duration_seconds"],
+                                "",
+                                result["diagnostics"]["error"],
+                            ]
+                        )
+                        if timeout_mode == "fail" and not allow_guest_timeouts:
+                            errors.append(f"{server.name} timed out after {timeout_seconds} seconds")
+                        self._delete_vm(vm_state, force_delete)
+                        del active_vms[server_id]
+
+                if now >= next_tick and next_tick < deadline:
+                    for _ in range(launches_per_tick):
+                        try:
+                            vm_state = self._launch_runner_vm(
+                                image,
+                                flavor,
+                                scenario_name,
+                                artifact_container,
+                                artifact_ttl_seconds,
+                                swift_auth_url,
+                                swift_username,
+                                swift_password,
+                                swift_project_name,
+                                swift_user_domain_name,
+                                swift_project_domain_name,
+                                swift_interface,
+                                swift_region_name,
+                                swift_cacert_b64,
+                                workload_profile,
+                                workload_params,
+                                iteration,
+                                wave,
+                                **kwargs,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            consecutive_launch_failures += 1
+                            summary["launch_failures"] += 1
+                            reason = str(exc)
+                            failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
+                            if consecutive_launch_failures >= max_consecutive_launch_failures:
+                                summary["stop_reason"] = "launch_failures"
+                                deadline = next_tick
+                                break
+                        else:
+                            consecutive_launch_failures = 0
+                            active_vms[vm_state["server"].id] = vm_state
+                            summary["launched_vms"] += 1
+                            summary["peak_active_vms"] = max(
+                                int(summary["peak_active_vms"]),
+                                len(active_vms),
+                            )
+                    next_tick += launch_tick_seconds
+
+                if now >= deadline and not active_vms:
+                    break
+
+                sleep_seconds = min(POLL_INTERVAL_SECONDS, max(next_tick - time.monotonic(), 0.1))
+                time.sleep(sleep_seconds)
+        finally:
+            for vm_state in list(active_vms.values()):
+                self._delete_vm(vm_state, force_delete)
+
+        failure_rows = [[reason, count] for reason, count in sorted(failure_reasons.items())]
+        self.add_output(complete=build_table_output(
+            "Quota-edge summary",
+            "Aggregate counters for quota-edge probing",
+            ["key", "value"],
+            [[key, str(summary[key])] for key in sorted(summary)],
+        ))
+        self.add_output(complete=self._build_failure_reason_output(failure_rows))
+        self.add_output(complete=build_table_output(
+            "VM results",
+            "Per-VM result summary",
+            ["server", "status", "duration_seconds", "artifact", "error"],
+            vm_rows,
+        ))
         if errors:
             raise rally_exceptions.ScriptError(message="; ".join(errors[:5]))

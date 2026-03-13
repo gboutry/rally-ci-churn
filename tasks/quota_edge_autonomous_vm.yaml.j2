@@ -1,10 +1,11 @@
 {% set title = title or "Rally CI churn" %}
-{% set description = description or "Autonomous CI-like runner churn without floating IPs" %}
+{% set description = description or "Autonomous CI runner churn until the control plane starts rejecting launches" %}
 {% set scenario_cfg = scenario or {} %}
 {% set cloud_cfg = cloud or {} %}
 {% set network_cfg = network or {} %}
 {% set storage_cfg = storage or {} %}
 {% set workload_cfg = workload or {} %}
+{% set quota_cfg = quota_edge or {} %}
 ---
 version: 2
 title: "{{ title }}"
@@ -15,10 +16,10 @@ tags:
   - ci
   - churn
   - autonomous
+  - quota-edge
 subtasks:
-{% for wave in range((scenario_cfg.waves or 1) | int) %}
-  - title: "Wave {{ wave + 1 }}/{{ scenario_cfg.waves or 1 }}"
-    description: "Launch {{ scenario_cfg.concurrency or 1 }} autonomous runners in parallel"
+  - title: "Quota-edge autonomous run"
+    description: "Launch autonomous runners until quota or scheduler failures accumulate"
     contexts:
       network@openstack:
         networks_per_tenant: 1
@@ -33,12 +34,11 @@ subtasks:
           external_gateway_info:
             network_id: "{{ cloud_cfg.external_network_id }}"
     scenario:
-      {{ scenario_cfg.name or "CIChurn.boot_autonomous_vm" }}:
+      {{ scenario_cfg.name or "CIChurn.quota_edge_autonomous_vm" }}:
         image:
           name: "{{ cloud_cfg.image_name }}"
         flavor:
           name: "{{ cloud_cfg.flavor_name }}"
-        wave: {{ wave + 1 }}
         workload_profile: "{{ workload_cfg.profile or 'smoke' }}"
         workload_params: {{ workload_cfg.params or {} }}
         artifact_container: "{{ storage_cfg.artifact_container or 'rally-ci-churn' }}"
@@ -57,12 +57,15 @@ subtasks:
         console_log_length: {{ scenario_cfg.console_log_length or 400 }}
         allow_guest_errors: {{ scenario_cfg.allow_guest_errors or false }}
         allow_guest_timeouts: {{ scenario_cfg.allow_guest_timeouts or false }}
+        duration_seconds: {{ quota_cfg.duration_seconds or 900 }}
+        launches_per_tick: {{ quota_cfg.launches_per_tick or 2 }}
+        launch_tick_seconds: {{ quota_cfg.launch_tick_seconds or 1 }}
+        max_consecutive_launch_failures: {{ quota_cfg.max_consecutive_launch_failures or 10 }}
     runner:
       constant:
-        times: {{ scenario_cfg.concurrency or 1 }}
-        concurrency: {{ scenario_cfg.concurrency or 1 }}
-        timeout: {{ scenario_cfg.timeout_seconds or 3600 if (scenario_cfg.timeout_seconds or 3600) > 0 else 86400 }}
+        times: 1
+        concurrency: 1
+        timeout: 86400
     sla:
       failure_rate:
         max: 0
-{% endfor %}

@@ -3,8 +3,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
-DEFAULT_SCENARIO="autonomous_vm"
-DEFAULT_ARGS_OUTPUT="${ROOT_DIR}/args/sunbeam.local.yaml"
 DEFAULT_ADMINRC_OUTPUT="${ROOT_DIR}/adminrc"
 RALLY_OPENSTACK_REPO_URL="${RALLY_OPENSTACK_REPO_URL:-https://opendev.org/openstack/rally-openstack}"
 RALLY_OPENSTACK_REF="${RALLY_OPENSTACK_REF:-4ceffd8c39414c1a8ede884c62bf06080aede5cd}"
@@ -12,14 +10,19 @@ RALLY_OPENSTACK_REQUIREMENT="rally-openstack @ git+${RALLY_OPENSTACK_REPO_URL}@$
 
 usage() {
     cat <<EOF
-Usage: $0 <clouds.yaml> [scenario-id] [output-args.yaml]
+Usage: $0 <clouds.yaml> [preset] [output-args.yaml]
 
 Bootstraps a local .venv, installs Rally/OpenStack dependencies and the local
 plugin package, then generates Sunbeam-oriented args and adminrc files.
 
-Supported scenario ids:
-  autonomous_vm
-  spiky_autonomous_vm
+Supported presets:
+  smoke
+  steady
+  spiky
+  stress-ng
+  failure-storm
+  quota-edge
+  tenant-churn
 EOF
 }
 
@@ -34,7 +37,8 @@ if [ $# -lt 1 ] || [ $# -gt 3 ]; then
 fi
 
 CLOUDS_YAML="$(realpath "$1")"
-SCENARIO_ID="${2:-${DEFAULT_SCENARIO}}"
+PRESET_ID="${2:-smoke}"
+DEFAULT_ARGS_OUTPUT="${ROOT_DIR}/args/${PRESET_ID}.yaml"
 ARGS_OUTPUT="${3:-${DEFAULT_ARGS_OUTPUT}}"
 ARGS_OUTPUT="$(realpath -m "${ARGS_OUTPUT}")"
 ADMINRC_OUTPUT="${ADMINRC_OUTPUT:-${DEFAULT_ADMINRC_OUTPUT}}"
@@ -73,6 +77,6 @@ export RALLY_CI_CHURN_OPENSTACK_BIN="${VENV_DIR}/bin/openstack"
 
 "${VENV_DIR}/bin/python" -m rally_ci_churn.bootstrap.sunbeam \
     --clouds-yaml "${CLOUDS_YAML}" \
-    --scenario "${SCENARIO_ID}" \
+    --preset "${PRESET_ID}" \
     --output-args "${ARGS_OUTPUT}" \
     --output-adminrc "${ADMINRC_OUTPUT}"

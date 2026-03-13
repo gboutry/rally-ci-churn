@@ -40,6 +40,9 @@ SYNTHETIC_PROFILES = {
 }
 
 
+VALID_FAILURE_MODES = {"success", "fail_fast", "hang"}
+
+
 def getenv(name: str, default: str | None = None) -> str:
     return os.environ.get(name, default or "") or ""
 
@@ -322,6 +325,25 @@ def upload_result(
     return uploaded
 
 
+def maybe_apply_failure_mode(
+    config: dict[str, object],
+    stages: list[dict[str, object]],
+) -> None:
+    workload_params = dict(config.get("workload_params", {}))
+    failure_mode = str(workload_params.get("failure_mode", "success") or "success")
+    if failure_mode not in VALID_FAILURE_MODES:
+        raise RuntimeError(f"Unknown failure_mode: {failure_mode}")
+    if failure_mode == "success":
+        return
+    with stage("fault_injection", stages) as stage_data:
+        stage_data["failure_mode"] = failure_mode
+        if failure_mode == "fail_fast":
+            raise RuntimeError("Injected fail_fast fault")
+        hang_seconds = int(workload_params.get("hang_seconds", 7200))
+        stage_data["hang_seconds"] = hang_seconds
+        time.sleep(hang_seconds)
+
+
 @contextlib.contextmanager
 def stage(name: str, stages: list[dict[str, object]]):
     start = time.perf_counter()
@@ -424,6 +446,8 @@ def main(argv: list[str] | None = None) -> int:
                 with stage("archive", stages) as stage_data:
                     artifact_path = archive_workspace(root)
                     stage_data["artifact_bytes"] = artifact_path.stat().st_size
+
+            maybe_apply_failure_mode(config, stages)
 
             context = build_ssl_context(config)
             with stage("auth", stages):
