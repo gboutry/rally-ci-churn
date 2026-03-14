@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import stat
 import tempfile
 import time
 import uuid
@@ -15,12 +14,11 @@ from rally import exceptions as rally_exceptions
 from rally.task import atomic
 from rally.task import types
 from rally.task import validation
-from rally.utils import sshutils
-
 from rally_openstack.common import consts
 from rally_openstack.task import scenario
-from rally_openstack.task.scenarios.vm import utils as vm_utils
 
+from rally_ci_churn.plugins.controller_runtime import ControllerRuntimeBase
+from rally_ci_churn.plugins.controller_runtime import SSH_PORT
 from rally_ci_churn.results import build_artifacts_output
 from rally_ci_churn.results import build_metrics_output
 from rally_ci_churn.results import build_phase_output
@@ -31,14 +29,9 @@ from rally_ci_churn.results import summarize_numeric_series
 
 
 DEFAULT_FIO_PORT = 8765
-SSH_PORT = 22
 DEVICE_DISCOVERY_TIMEOUT_SECONDS = 600
 DEVICE_POLL_INTERVAL_SECONDS = 2.0
-VOLUME_POLL_INTERVAL_SECONDS = 2.0
-SERVER_POLL_INTERVAL_SECONDS = 2.0
 WORKER_READY_TIMEOUT_SECONDS = 600
-ATTACH_RETRY_COUNT = 5
-ATTACH_RETRY_DELAY_SECONDS = 5.0
 
 
 def _as_int_list(values: list[object]) -> list[int]:
@@ -85,92 +78,7 @@ def _case_id(case: dict[str, object]) -> str:
     )
 
 
-class _FioDistributedBase(vm_utils.VMScenario):
-    def _task_uuid(self) -> str:
-        owner_id = self.context.get("owner_id")
-        if owner_id:
-            return str(owner_id)
-        task = self.context.get("task")
-        if isinstance(task, dict) and task.get("uuid"):
-            return str(task["uuid"])
-        return uuid.uuid4().hex
-
-    def _iteration_number(self) -> int:
-        return int(self.context.get("iteration", 0) or 0)
-
-    def _network_name(self, server) -> str:
-        return next(iter(server.networks))
-
-    def _fixed_ip(self, server) -> str:
-        for addresses in server.addresses.values():
-            for entry in addresses:
-                if entry.get("OS-EXT-IPS:type") == "fixed" or "OS-EXT-IPS:type" not in entry:
-                    return str(entry["addr"])
-        raise rally_exceptions.ScriptError(message=f"Unable to determine a fixed IP for server {server.id}")
-
-    def _tenant_cidr(self) -> str:
-        tenant = self.context.get("tenant", {})
-        subnets = tenant.get("subnets", [])
-        if subnets:
-            cidr = subnets[0].get("cidr")
-            if cidr:
-                return str(cidr)
-        raise rally_exceptions.ScriptError(message="network@openstack did not provide a tenant subnet")
-
-    def _create_keypair(self) -> dict[str, str]:
-        keypair = self.clients("nova").keypairs.create(self.generate_random_name())
-        return {
-            "name": keypair.name,
-            "private": keypair.private_key,
-            "public": keypair.public_key,
-        }
-
-    def _delete_keypair(self, name: str) -> None:
-        try:
-            self.clients("nova").keypairs.delete(name)
-        except Exception:
-            return
-
-    def _create_security_group(self, name: str, description: str) -> dict[str, object]:
-        return self.neutron.create_security_group(name=name, description=description)
-
-    def _delete_security_group(self, security_group_id: str) -> None:
-        try:
-            self.neutron.delete_security_group(security_group_id)
-        except Exception:
-            return
-
-    def _add_security_group_rule(
-        self,
-        security_group_id: str,
-        protocol: str,
-        port_min: int | None = None,
-        port_max: int | None = None,
-        remote_ip_prefix: str | None = None,
-        ethertype: str = "IPv4",
-    ) -> None:
-        kwargs: dict[str, object] = {
-            "security_group_id": security_group_id,
-            "protocol": protocol,
-            "ethertype": ethertype,
-        }
-        if port_min is not None:
-            kwargs["port_range_min"] = port_min
-        if port_max is not None:
-            kwargs["port_range_max"] = port_max
-        if remote_ip_prefix is not None:
-            kwargs["remote_ip_prefix"] = remote_ip_prefix
-        self.neutron.create_security_group_rule(**kwargs)
-
-    def _create_controller_security_group(self) -> dict[str, object]:
-        security_group = self._create_security_group(
-            self.generate_random_name(),
-            "Allow SSH access to the fio controller VM",
-        )
-        self._add_security_group_rule(security_group["id"], "tcp", SSH_PORT, SSH_PORT, "0.0.0.0/0")
-        self._add_security_group_rule(security_group["id"], "icmp", remote_ip_prefix="0.0.0.0/0")
-        return security_group
-
+class _FioDistributedBase(ControllerRuntimeBase):
     def _create_worker_security_group(self, tenant_cidr: str, fio_port: int) -> dict[str, object]:
         security_group = self._create_security_group(
             self.generate_random_name(),
@@ -297,95 +205,6 @@ runcmd:
             userdata=self._build_worker_user_data(expected_volumes, fio_port),
         )
 
-    def _wait_for_volume_status(self, volume_id: str, statuses: list[str], timeout_seconds: int = 600):
-        deadline = time.monotonic() + timeout_seconds
-        volume = None
-        while time.monotonic() < deadline:
-            volume = self.clients("cinder").volumes.get(volume_id)
-            if volume.status in statuses:
-                return volume
-            time.sleep(VOLUME_POLL_INTERVAL_SECONDS)
-        current = volume.status if volume is not None else "unknown"
-        raise rally_exceptions.ScriptError(
-            message=f"Volume {volume_id} did not reach {statuses} before timeout (current={current})"
-        )
-
-    @atomic.action_timer("volume.create")
-    def _create_volume(self, size: int, volume_type: str | None):
-        kwargs: dict[str, object] = {"size": size, "name": self.generate_random_name()}
-        if volume_type:
-            kwargs["volume_type"] = volume_type
-        volume = self.clients("cinder").volumes.create(**kwargs)
-        return self._wait_for_volume_status(volume.id, ["available"])
-
-    @atomic.action_timer("volume.attach")
-    def _attach_volume(self, server, volume_id: str, device_name: str):
-        last_error = None
-        for attempt in range(1, ATTACH_RETRY_COUNT + 1):
-            try:
-                self.clients("nova").volumes.create_server_volume(server.id, volume_id, device_name)
-                return self._wait_for_volume_status(volume_id, ["in-use"])
-            except Exception as exc:
-                last_error = exc
-                try:
-                    volume = self.clients("cinder").volumes.get(volume_id)
-                    if volume.status == "in-use":
-                        return volume
-                    if volume.status == "attaching":
-                        self._wait_for_volume_status(volume_id, ["in-use"], timeout_seconds=120)
-                        return self.clients("cinder").volumes.get(volume_id)
-                except Exception:
-                    pass
-                if attempt == ATTACH_RETRY_COUNT:
-                    break
-                time.sleep(ATTACH_RETRY_DELAY_SECONDS)
-        raise last_error
-
-    def _detach_volume(self, server_id: str, volume_id: str) -> None:
-        try:
-            self.clients("nova").volumes.delete_server_volume(server_id, volume_id)
-        except Exception:
-            return
-        try:
-            self._wait_for_volume_status(volume_id, ["available"], timeout_seconds=300)
-        except Exception:
-            return
-
-    def _delete_volume(self, volume_id: str) -> None:
-        try:
-            self.clients("cinder").volumes.delete(volume_id)
-        except Exception:
-            return
-
-    @atomic.action_timer("controller.connect_ssh")
-    def _ssh(
-        self,
-        ip_address: str,
-        username: str,
-        private_key: str,
-        timeout_seconds: int,
-    ) -> sshutils.SSH:
-        ssh = sshutils.SSH(username, ip_address, port=SSH_PORT, pkey=private_key)
-        self._wait_for_ssh(ssh, timeout=timeout_seconds, interval=2)
-        return ssh
-
-    @atomic.action_timer("artifacts.download")
-    def _download_tree(self, ssh: sshutils.SSH, remote_dir: str, local_dir: Path) -> None:
-        client = ssh._get_client()  # noqa: SLF001 - Rally's SSH helper does not expose SFTP download.
-        local_dir.mkdir(parents=True, exist_ok=True)
-        with client.open_sftp() as sftp:
-            self._download_tree_sftp(sftp, remote_dir, local_dir)
-
-    def _download_tree_sftp(self, sftp, remote_dir: str, local_dir: Path) -> None:
-        for entry in sftp.listdir_attr(remote_dir):
-            remote_path = f"{remote_dir.rstrip('/')}/{entry.filename}"
-            local_path = local_dir / entry.filename
-            if stat.S_ISDIR(entry.st_mode):
-                local_path.mkdir(parents=True, exist_ok=True)
-                self._download_tree_sftp(sftp, remote_path, local_path)
-            else:
-                sftp.get(remote_path, str(local_path))
-
     @atomic.action_timer("worker.wait_ready")
     def _wait_for_worker_fio_ready(
         self,
@@ -472,14 +291,6 @@ runcmd:
                             case["case_id"] = _case_id(case)
                             cases.append(case)
         return cases
-
-    def _artifacts_dir(self, root_dir: str) -> Path:
-        scenario_root = Path(root_dir).expanduser().resolve() / self._task_uuid() / "fio-distributed"
-        iteration_dir = scenario_root / f"iteration-{self._iteration_number():04d}"
-        if iteration_dir.exists():
-            shutil.rmtree(iteration_dir)
-        iteration_dir.mkdir(parents=True, exist_ok=True)
-        return iteration_dir
 
     def _inventory_payload(
         self,
@@ -649,10 +460,6 @@ runcmd:
             ["manifest_json", str(artifacts_dir / "manifest.json")],
         ]
 
-    def _timings_payload(self) -> dict[str, dict[str, object]]:
-        _, summary = summarize_atomic_actions(self.atomic_actions())
-        return summary
-
     def _result_payload(self, artifacts_dir: Path, summary_payload: dict[str, object]) -> dict[str, object]:
         summary = self._summary_dict(summary_payload, artifacts_dir)
         metrics = {
@@ -752,7 +559,7 @@ class FioDistributedScenario(_FioDistributedBase):
         attachments: list[dict[str, object]] = []
         volumes: list[str] = []
         ssh = None
-        artifacts_dir = self._artifacts_dir(artifacts_root_dir)
+        artifacts_dir = self._artifacts_dir(artifacts_root_dir, "fio-distributed")
         summary_payload: dict[str, object] | None = None
         controller_remote_dir = f"/var/lib/rally-fio/run/{uuid.uuid4().hex}"
 

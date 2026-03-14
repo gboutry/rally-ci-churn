@@ -1,0 +1,132 @@
+{% set title = title or "Mixed cloud pressure benchmark" %}
+{% set description = description or "Concurrent stress-ng churn, fio throughput, and network traffic over one tenant overlay network" %}
+{% set cloud_cfg = cloud or {} %}
+{% set network_cfg = network or {} %}
+{% set controller_cfg = controller or {} %}
+{% set storage_cfg = storage or {} %}
+{% set mixed_cfg = mixed or {} %}
+{% set churn_cfg = churn or {} %}
+{% set fio_cfg = fio or {} %}
+{% set many_cfg = many_to_one or {} %}
+{% set ring_cfg = ring or {} %}
+{% set artifacts_cfg = artifacts or {} %}
+---
+version: 2
+title: "{{ title }}"
+description: "{{ description }}"
+tags:
+  - rally
+  - openstack
+  - mixed
+  - cinder
+  - network
+  - stress-ng
+subtasks:
+  - title: "Mixed pressure run"
+    description: "Run fixed fio/network pressure while launching spiky stress-ng churn"
+    contexts:
+      network@openstack:
+        start_cidr: "{{ network_cfg.start_cidr or '10.80.0.0/20' }}"
+        networks_per_tenant: 1
+        subnets_per_network: 1
+{% if network_cfg.dns_nameservers %}
+        dns_nameservers:
+{% for dns_nameserver in network_cfg.dns_nameservers %}
+          - "{{ dns_nameserver }}"
+{% endfor %}
+{% endif %}
+        router:
+          external_gateway_info:
+            network_id: "{{ cloud_cfg.external_network_id }}"
+    scenario:
+      CIChurn.mixed_pressure:
+        controller_image:
+          name: "{{ cloud_cfg.controller_image_name or cloud_cfg.benchmark_image or cloud_cfg.image_name }}"
+        net_image:
+          name: "{{ cloud_cfg.net_image_name or cloud_cfg.controller_image_name or cloud_cfg.benchmark_image or cloud_cfg.image_name }}"
+        fio_worker_image:
+          name: "{{ cloud_cfg.fio_worker_image_name or cloud_cfg.controller_image_name or cloud_cfg.benchmark_image or cloud_cfg.image_name }}"
+        churn_image:
+          name: "{{ cloud_cfg.churn_image_name or cloud_cfg.controller_image_name or cloud_cfg.benchmark_image or cloud_cfg.image_name }}"
+        controller_flavor:
+          name: "{{ cloud_cfg.controller_flavor_name }}"
+        fixed_group_flavor:
+          name: "{{ cloud_cfg.fixed_group_flavor_name }}"
+        churn_flavor:
+          name: "{{ cloud_cfg.churn_flavor_name }}"
+        external_network_name: "{{ cloud_cfg.external_network_name }}"
+        ssh_user: "{{ controller_cfg.ssh_user or 'ubuntu' }}"
+        ssh_connect_timeout_seconds: {{ controller_cfg.ssh_connect_timeout_seconds or 300 }}
+        command_timeout_seconds: {{ controller_cfg.command_timeout_seconds or 0 }}
+        duration_seconds: {{ mixed_cfg.duration_seconds or 90 }}
+        subbenchmark_failure_mode: "{{ mixed_cfg.subbenchmark_failure_mode or 'fail' }}"
+        artifact_container: "{{ storage_cfg.artifact_container or 'rally-ci-churn' }}"
+        artifact_ttl_seconds: {{ storage_cfg.artifact_ttl_seconds or 0 }}
+        swift_auth_url: "{{ storage_cfg.swift_auth_url }}"
+        swift_username: "{{ storage_cfg.swift_username }}"
+        swift_password: "{{ storage_cfg.swift_password }}"
+        swift_project_name: "{{ storage_cfg.swift_project_name }}"
+        swift_user_domain_name: "{{ storage_cfg.swift_user_domain_name }}"
+        swift_project_domain_name: "{{ storage_cfg.swift_project_domain_name }}"
+        swift_interface: "{{ storage_cfg.swift_interface or 'public' }}"
+        swift_region_name: "{{ storage_cfg.swift_region_name or '' }}"
+        swift_cacert_b64: "{{ storage_cfg.swift_cacert_b64 or '' }}"
+        max_active_vms: {{ churn_cfg.max_active_vms or 2 }}
+        baseline_launches_per_minute: {{ churn_cfg.baseline_launches_per_minute or 2 }}
+        burst_windows: {{ churn_cfg.burst_windows or [] }}
+        launch_tick_seconds: {{ churn_cfg.launch_tick_seconds or 1 }}
+        churn_timeout_seconds: {{ churn_cfg.timeout_seconds or 3600 }}
+        churn_timeout_mode: "{{ churn_cfg.timeout_mode or 'fail' }}"
+        churn_workload_params: {{ churn_cfg.workload_params or {'duration_seconds': 60, 'cpu_workers': 1, 'vm_workers': 1, 'vm_bytes': '256M'} }}
+        fio_volume_size_gib: {{ fio_cfg.volume_size_gib or 2 }}
+{% if fio_cfg.volume_type is defined and fio_cfg.volume_type is not none %}
+        fio_volume_type: "{{ fio_cfg.volume_type }}"
+{% else %}
+        fio_volume_type: null
+{% endif %}
+        fio_client_counts: {{ fio_cfg.client_counts or [1] }}
+        fio_volumes_per_client: {{ fio_cfg.volumes_per_client or [1] }}
+        fio_profile_names: {{ fio_cfg.profile_names or ['mixed-workload'] }}
+        fio_rw_modes: {{ fio_cfg.rw_modes or ['write'] }}
+        fio_block_sizes: {{ fio_cfg.block_sizes or ['1M'] }}
+        fio_numjobs: {{ fio_cfg.numjobs or [1] }}
+        fio_iodepths: {{ fio_cfg.iodepths or [1] }}
+        fio_runtime_seconds: {{ fio_cfg.runtime_seconds or 60 }}
+        fio_ramp_time_seconds: {{ fio_cfg.ramp_time_seconds or 5 }}
+        fio_port: {{ fio_cfg.fio_port or 8765 }}
+        fio_ioengine: "{{ fio_cfg.ioengine or 'io_uring' }}"
+        many_client_count: {{ many_cfg.client_count or 2 }}
+        many_mode: "{{ many_cfg.mode or 'iperf3' }}"
+        many_protocols: {{ many_cfg.protocols or ['tcp'] }}
+        many_duration_seconds: {{ many_cfg.duration_seconds or 60 }}
+        many_ramp_time_seconds: {{ many_cfg.ramp_time_seconds or 5 }}
+        many_base_port: {{ many_cfg.base_port or 5201 }}
+        many_flow_direction: "{{ many_cfg.flow_direction or 'server_to_client' }}"
+        many_parallel_streams: {{ many_cfg.parallel_streams or [2] }}
+        many_udp_target_mbps: {{ many_cfg.udp_target_mbps or [500] }}
+        many_server_volume_size_gib: {{ many_cfg.server_volume_size_gib or 2 }}
+{% if many_cfg.server_volume_type is defined and many_cfg.server_volume_type is not none %}
+        many_server_volume_type: "{{ many_cfg.server_volume_type }}"
+{% else %}
+        many_server_volume_type: null
+{% endif %}
+        many_http_file_count: {{ many_cfg.http_file_count or 4 }}
+        many_http_file_size_mib: {{ many_cfg.http_file_size_mib or 128 }}
+        ring_participant_count: {{ ring_cfg.participant_count or 3 }}
+        ring_protocols: {{ ring_cfg.protocols or ['tcp'] }}
+        ring_duration_seconds: {{ ring_cfg.duration_seconds or 60 }}
+        ring_ramp_time_seconds: {{ ring_cfg.ramp_time_seconds or 5 }}
+        ring_base_port: {{ ring_cfg.base_port or 6201 }}
+        ring_neighbors_per_vm: {{ ring_cfg.neighbors_per_vm or 1 }}
+        ring_bidirectional: {{ ring_cfg.bidirectional if ring_cfg.bidirectional is defined else true }}
+        ring_parallel_streams: {{ ring_cfg.parallel_streams or [2] }}
+        ring_udp_target_mbps: {{ ring_cfg.udp_target_mbps or [300] }}
+        artifacts_root_dir: "{{ artifacts_cfg.root_dir or 'artifacts' }}"
+    runner:
+      constant:
+        times: 1
+        concurrency: 1
+        timeout: {{ controller_cfg.command_timeout_seconds or 0 if (controller_cfg.command_timeout_seconds or 0) > 0 else 86400 }}
+    sla:
+      failure_rate:
+        max: 0

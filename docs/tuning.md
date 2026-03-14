@@ -65,6 +65,28 @@ Guidance:
 - keep `volume_size_gib` large enough for the fio access pattern
 - raise `numjobs` and `iodepths` only after confirming the baseline topology works
 
+### Mixed pressure scenario
+
+Key knobs:
+
+- `duration_seconds`
+- churn:
+  `max_active_vms`, `baseline_launches_per_minute`, `burst_windows`
+- fio:
+  `client_counts`, `volumes_per_client`, `profile_names`
+- many-to-one:
+  `client_count`, `parallel_streams`, `protocols`
+- ring:
+  `participant_count`, `neighbors_per_vm`, `parallel_streams`
+
+Guidance:
+
+- keep the BM0 smoke preset small; the whole point is overlap, not per-axis peak
+- grow fixed groups before making the churn schedule aggressive
+- use `vm_workers` and `vm_bytes` together when you want churn VMs to apply CPU
+  and memory pressure at the same time
+- keep the one-FIP controller invariant unless you are debugging
+
 ### Network traffic scenarios
 
 Key knobs:

@@ -64,6 +64,26 @@ Expected files:
 - `raw/*.json`
 - `raw/*.stdout`
 
+## Mixed pressure scenario
+
+This scenario writes a local artifact bundle on the Rally host with nested
+subdirectories for each component.
+
+Artifact layout:
+
+- `artifacts/<task-uuid>/mixed-pressure/iteration-0000/`
+
+Expected files:
+
+- `summary.md`
+- `summary.csv`
+- `summary.json`
+- `manifest.json`
+- `fio/*`
+- `net-many-to-one/*`
+- `net-ring/*`
+- `vm-churn/*`
+
 ## How to inspect results
 
 - use `rally task report <task-id> --out output.html` for human review

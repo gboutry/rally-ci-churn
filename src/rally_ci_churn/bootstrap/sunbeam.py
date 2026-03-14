@@ -24,6 +24,7 @@ SUPPORTED_PRESETS = {
     "spiky",
     "stress-ng",
     "fio-distributed",
+    "mixed-pressure",
     "net-many-to-one",
     "net-many-to-one-http",
     "net-ring",
@@ -278,7 +279,7 @@ def _build_fio_distributed_preset(
     rendered["controller"] = {
         "ssh_user": "ubuntu",
         "ssh_connect_timeout_seconds": 300,
-        "command_timeout_seconds": 0,
+        "command_timeout_seconds": 300,
     }
     rendered["cinder"] = {
         "volume_size_gib": 10,
@@ -325,7 +326,7 @@ def _build_net_many_to_one_preset(
     rendered["controller"] = {
         "ssh_user": "ubuntu",
         "ssh_connect_timeout_seconds": 300,
-        "command_timeout_seconds": 0,
+        "command_timeout_seconds": 300,
     }
     rendered["traffic"] = {
         "mode": "iperf3",
@@ -385,7 +386,7 @@ def _build_net_ring_preset(
     rendered["controller"] = {
         "ssh_user": "ubuntu",
         "ssh_connect_timeout_seconds": 300,
-        "command_timeout_seconds": 0,
+        "command_timeout_seconds": 300,
     }
     rendered["traffic"] = {
         "protocols": ["tcp", "udp"],
@@ -405,6 +406,99 @@ def _build_net_ring_preset(
     rendered.pop("workload", None)
     rendered.pop("image_prep", None)
     return rendered, "tasks/net_ring.yaml.j2"
+
+
+def _build_mixed_pressure_preset(
+    clouds_yaml: Path,
+    config: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    rendered = _build_base_args(clouds_yaml, config)
+    net_image = _pick_custom_image(clouds_yaml, "ubuntu-netbench")
+    fio_worker_image = _pick_custom_image(clouds_yaml, "ubuntu-fio")
+    churn_image = _pick_custom_image(clouds_yaml, "ubuntu-stress-ng")
+    controller_flavor = _pick_preferred_flavor(clouds_yaml, ("m1.netbench", "m1.small"))
+    fixed_group_flavor = _pick_preferred_flavor(clouds_yaml, ("m1.netbench", "m1.small"))
+    churn_flavor = _pick_preferred_flavor(clouds_yaml, ("m1.netbench", "m1.small"))
+    rendered["title"] = "Mixed cloud pressure benchmark"
+    rendered["description"] = "Concurrent stress-ng churn, fio throughput, and network traffic over one tenant overlay network"
+    rendered["cloud"] = {
+        "controller_image_name": fio_worker_image,
+        "net_image_name": net_image,
+        "fio_worker_image_name": fio_worker_image,
+        "churn_image_name": churn_image,
+        "controller_flavor_name": controller_flavor,
+        "fixed_group_flavor_name": fixed_group_flavor,
+        "churn_flavor_name": churn_flavor,
+        "external_network_name": rendered["cloud"]["external_network_name"],
+        "external_network_id": rendered["cloud"]["external_network_id"],
+    }
+    rendered["network"]["start_cidr"] = "10.80.0.0/20"
+    rendered["controller"] = {
+        "ssh_user": "ubuntu",
+        "ssh_connect_timeout_seconds": 300,
+        "command_timeout_seconds": 300,
+    }
+    rendered["mixed"] = {
+        "duration_seconds": 25,
+        "subbenchmark_failure_mode": "fail",
+    }
+    rendered["churn"] = {
+        "max_active_vms": 1,
+        "baseline_launches_per_minute": 2,
+        "burst_windows": [{"start_second": 10, "end_second": 20, "launch_rate_multiplier": 2.0}],
+        "launch_tick_seconds": 1,
+        "timeout_seconds": 3600,
+        "timeout_mode": "fail",
+        "workload_params": {
+            "duration_seconds": 15,
+            "cpu_workers": 1,
+            "vm_workers": 1,
+            "vm_bytes": "256M",
+        },
+    }
+    rendered["fio"] = {
+        "volume_size_gib": 2,
+        "volume_type": None,
+        "client_counts": [1],
+        "volumes_per_client": [1],
+        "profile_names": ["mixed-workload"],
+        "numjobs": [1],
+        "iodepths": [1],
+        "runtime_seconds": 15,
+        "ramp_time_seconds": 3,
+        "fio_port": 8765,
+        "ioengine": "io_uring",
+    }
+    rendered["many_to_one"] = {
+        "client_count": 1,
+        "mode": "iperf3",
+        "protocols": ["tcp"],
+        "duration_seconds": 10,
+        "ramp_time_seconds": 2,
+        "base_port": 5201,
+        "flow_direction": "server_to_client",
+        "parallel_streams": [1],
+        "udp_target_mbps": [500],
+        "server_volume_size_gib": 2,
+        "server_volume_type": None,
+        "http_file_count": 4,
+        "http_file_size_mib": 128,
+    }
+    rendered["ring"] = {
+        "participant_count": 2,
+        "protocols": ["tcp"],
+        "duration_seconds": 10,
+        "ramp_time_seconds": 2,
+        "base_port": 6201,
+        "neighbors_per_vm": 1,
+        "bidirectional": True,
+        "parallel_streams": [1],
+        "udp_target_mbps": [300],
+    }
+    rendered["artifacts"] = {"root_dir": "artifacts"}
+    rendered.pop("workload", None)
+    rendered.pop("image_prep", None)
+    return rendered, "tasks/mixed_pressure.yaml.j2"
 
 
 def _build_failure_storm_preset(
@@ -540,6 +634,7 @@ def main(argv: list[str] | None = None) -> int:
             "spiky": _build_spiky_preset,
             "stress-ng": _build_stress_ng_preset,
             "fio-distributed": _build_fio_distributed_preset,
+            "mixed-pressure": _build_mixed_pressure_preset,
             "net-many-to-one": _build_net_many_to_one_preset,
             "net-many-to-one-http": _build_net_many_to_one_http_preset,
             "net-ring": _build_net_ring_preset,

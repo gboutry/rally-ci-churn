@@ -1,0 +1,87 @@
+title: "Mixed cloud pressure benchmark"
+description: "Concurrent stress-ng churn, fio throughput, and network traffic over one tenant overlay network"
+cloud:
+  controller_image_name: "ubuntu-fio"
+  net_image_name: "ubuntu-netbench"
+  fio_worker_image_name: "ubuntu-fio"
+  churn_image_name: "ubuntu-stress-ng"
+  controller_flavor_name: "m1.netbench"
+  fixed_group_flavor_name: "m1.netbench"
+  churn_flavor_name: "m1.netbench"
+  external_network_name: "external-network"
+  external_network_id: "00000000-0000-0000-0000-000000000000"
+network:
+  start_cidr: "10.80.0.0/20"
+  dns_nameservers: []
+controller:
+  ssh_user: "ubuntu"
+  ssh_connect_timeout_seconds: 300
+  command_timeout_seconds: 0
+storage:
+  artifact_container: "rally-ci-churn"
+  artifact_ttl_seconds: 0
+  swift_auth_url: "https://example.invalid/openstack-keystone/v3"
+  swift_username: "sunbeam"
+  swift_password: "secret"
+  swift_project_name: "gtestos"
+  swift_user_domain_name: "users"
+  swift_project_domain_name: "users"
+  swift_interface: "public"
+  swift_region_name: ""
+  swift_cacert_b64: ""
+mixed:
+  duration_seconds: 25
+  subbenchmark_failure_mode: "fail"
+churn:
+  max_active_vms: 1
+  baseline_launches_per_minute: 2
+  burst_windows:
+    - start_second: 10
+      end_second: 20
+      launch_rate_multiplier: 2.0
+  launch_tick_seconds: 1
+  timeout_seconds: 3600
+  timeout_mode: "fail"
+  workload_params:
+    duration_seconds: 15
+    cpu_workers: 1
+    vm_workers: 1
+    vm_bytes: "256M"
+fio:
+  volume_size_gib: 2
+  volume_type: null
+  client_counts: [1]
+  volumes_per_client: [1]
+  profile_names: ["mixed-workload"]
+  numjobs: [1]
+  iodepths: [1]
+  runtime_seconds: 15
+  ramp_time_seconds: 3
+  fio_port: 8765
+  ioengine: "io_uring"
+many_to_one:
+  client_count: 1
+  mode: "iperf3"
+  protocols: ["tcp"]
+  duration_seconds: 10
+  ramp_time_seconds: 2
+  base_port: 5201
+  flow_direction: "server_to_client"
+  parallel_streams: [1]
+  udp_target_mbps: [500]
+  server_volume_size_gib: 2
+  server_volume_type: null
+  http_file_count: 4
+  http_file_size_mib: 128
+ring:
+  participant_count: 2
+  protocols: ["tcp"]
+  duration_seconds: 10
+  ramp_time_seconds: 2
+  base_port: 6201
+  neighbors_per_vm: 1
+  bidirectional: true
+  parallel_streams: [1]
+  udp_target_mbps: [300]
+artifacts:
+  root_dir: "artifacts"

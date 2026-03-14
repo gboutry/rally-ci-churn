@@ -54,6 +54,7 @@ rally task start tasks/autonomous_vm_waves.yaml.j2 \
 ./scripts/setup_uv.sh /path/to/clouds.yaml quota-edge
 ./scripts/setup_uv.sh /path/to/clouds.yaml tenant-churn
 ./scripts/setup_uv.sh /path/to/clouds.yaml fio-distributed
+./scripts/setup_uv.sh /path/to/clouds.yaml mixed-pressure
 ./scripts/setup_uv.sh /path/to/clouds.yaml net-many-to-one
 ./scripts/setup_uv.sh /path/to/clouds.yaml net-many-to-one-http
 ./scripts/setup_uv.sh /path/to/clouds.yaml net-ring
@@ -69,5 +70,7 @@ for the mapping.
 - using a copied `clouds.yaml` with broken relative CA paths
 - trying to run `stress-ng` or fio without building and uploading the required
   image first
+- trying to run `mixed-pressure` without building and uploading
+  `ubuntu-mixed-benchmark`
 - missing Swift on autonomous VM scenarios
 - missing Cinder or floating IP support on the distributed fio scenario

@@ -46,6 +46,19 @@
 - common presets:
   `fio-distributed`
 
+### `CIChurn.mixed_pressure`
+
+- topology:
+  one controller VM, fixed fio/network benchmark groups, and spiky autonomous
+  `stress-ng` churn on the same tenant network
+- intent:
+  exercise a cloud under overlapping compute, block, and east-west network
+  pressure instead of isolated single-axis benchmarks
+- template:
+  `tasks/mixed_pressure.yaml.j2`
+- common presets:
+  `mixed-pressure`
+
 ### `CIChurn.net_many_to_one`
 
 - topology:
@@ -92,5 +105,6 @@ for the direct template-to-scenario mapping.
 - choose `quota_edge_autonomous_vm` for refusal and saturation behavior
 - choose `tenant_churn_autonomous_vm` for project/network churn
 - choose `fio_distributed` for controller/worker volume benchmarking
+- choose `mixed_pressure` for overlapping multi-axis pressure on a single tenant
 - choose `net_many_to_one` for one-server-many-clients network pressure
 - choose `net_ring` for bounded east-west overlay traffic

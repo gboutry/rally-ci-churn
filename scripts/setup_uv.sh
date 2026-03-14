@@ -21,6 +21,7 @@ Supported presets:
   spiky
   stress-ng
   fio-distributed
+  mixed-pressure
   net-many-to-one
   net-many-to-one-http
   net-ring

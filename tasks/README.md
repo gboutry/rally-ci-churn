@@ -19,6 +19,9 @@ Task templates map directly to the custom Rally scenarios.
 - `fio_distributed.yaml.j2`
   - controller/worker fio benchmarking
   - typically used with `fio-distributed`
+- `mixed_pressure.yaml.j2`
+  - one controller running overlapping fio, network, and spiky stress-ng pressure
+  - typically used with `mixed-pressure`
 - `net_many_to_one.yaml.j2`
   - one server, many clients, and one controller
   - typically used with `net-many-to-one` or `net-many-to-one-http`

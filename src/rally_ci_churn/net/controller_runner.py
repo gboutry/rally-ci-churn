@@ -10,6 +10,8 @@ import subprocess
 import time
 from pathlib import Path
 
+_LOG_PATH: Path | None = None
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run network benchmark cases from the controller VM.")
@@ -17,6 +19,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--matrix", required=True)
     parser.add_argument("--output-dir", required=True)
     return parser.parse_args()
+
+
+def _log(message: str) -> None:
+    global _LOG_PATH
+    if _LOG_PATH is None:
+        return
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    with _LOG_PATH.open("a", encoding="utf-8") as stream:
+        stream.write(f"{timestamp} {message}\n")
 
 
 def _ssh_base(identity_file: str) -> list[str]:
@@ -35,41 +46,55 @@ def _ssh_base(identity_file: str) -> list[str]:
     ]
 
 
-def _ssh_run(identity_file: str, user: str, host: str, command: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [*_ssh_base(identity_file), f"{user}@{host}", command],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+def _ssh_run(
+    identity_file: str,
+    user: str,
+    host: str,
+    command: str,
+    timeout_seconds: int = 60,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            [*_ssh_base(identity_file), f"{user}@{host}", command],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Timed out running SSH command on {host}: {command}") from exc
 
 
 def _wait_for_ssh(identity_file: str, user: str, host: str, timeout_seconds: int = 600) -> None:
+    _log(f"wait_for_ssh start host={host}")
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        result = _ssh_run(identity_file, user, host, "true")
+        result = _ssh_run(identity_file, user, host, "true", timeout_seconds=15)
         if result.returncode == 0:
+            _log(f"wait_for_ssh ready host={host}")
             return
         time.sleep(2.0)
     raise RuntimeError(f"Timed out waiting for SSH on {host}")
 
 
 def _remote_json(identity_file: str, user: str, host: str, command: str) -> dict[str, object]:
-    result = _ssh_run(identity_file, user, host, command)
+    result = _ssh_run(identity_file, user, host, command, timeout_seconds=60)
     if result.returncode != 0:
         raise RuntimeError(f"Remote command failed on {host}: {result.stderr.strip() or result.stdout.strip()}")
     return json.loads(result.stdout)
 
 
 def _prepare_host(identity_file: str, user: str, host: str) -> None:
+    _log(f"prepare_host start host={host}")
     command = (
         "sudo install -d -o {user} -g {user} -m 0755 /var/lib/rally-netbench /var/lib/rally-netbench/raw "
         "&& sudo chown -R {user}:{user} /var/lib/rally-netbench"
     ).format(user=shlex.quote(user))
-    result = _ssh_run(identity_file, user, host, command)
+    result = _ssh_run(identity_file, user, host, command, timeout_seconds=60)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to prepare host {host}: {result.stderr.strip() or result.stdout.strip()}")
+    _log(f"prepare_host done host={host}")
 
 
 def _host_non_root_disks(identity_file: str, user: str, host: str) -> list[str]:
@@ -102,7 +127,7 @@ for blockdevice in payload.get("blockdevices", []):
 print(json.dumps({"disks": disks}))
 PY
 """
-    result = _ssh_run(identity_file, user, host, script)
+    result = _ssh_run(identity_file, user, host, script, timeout_seconds=30)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to list data disks on {host}: {result.stderr.strip() or result.stdout.strip()}")
     payload = json.loads(result.stdout)
@@ -123,8 +148,9 @@ def _wait_for_disks(identity_file: str, user: str, host: str, count: int, timeou
 
 
 def _start_background(identity_file: str, user: str, host: str, command: str) -> None:
+    _log(f"start_background host={host} command={command}")
     wrapped = f"nohup bash -lc {shlex.quote(command)} >/dev/null 2>&1 &"
-    result = _ssh_run(identity_file, user, host, wrapped)
+    result = _ssh_run(identity_file, user, host, wrapped, timeout_seconds=30)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to start background command on {host}: {result.stderr.strip() or result.stdout.strip()}")
 
@@ -134,14 +160,16 @@ def _kill_matching(identity_file: str, user: str, host: str, pattern: str) -> No
 
 
 def _wait_for_tcp(identity_file: str, user: str, host: str, port: int, timeout_seconds: int = 120) -> None:
+    _log(f"wait_for_tcp start host={host} port={port}")
     deadline = time.monotonic() + timeout_seconds
     command = (
         "python3 -c \"import socket; "
         f"sock=socket.create_connection(('127.0.0.1',{port}),2); sock.close()\""
     )
     while time.monotonic() < deadline:
-        result = _ssh_run(identity_file, user, host, command)
+        result = _ssh_run(identity_file, user, host, command, timeout_seconds=10)
         if result.returncode == 0:
+            _log(f"wait_for_tcp ready host={host} port={port}")
             return
         time.sleep(1.0)
     raise RuntimeError(f"Timed out waiting for TCP port {port} on {host}")
@@ -161,7 +189,12 @@ def _iperf_client_command(
     parallel_streams: int,
     udp_target_mbps: int | None,
 ) -> str:
+    timeout_seconds = int(duration_seconds) + int(ramp_time_seconds) + 60
     parts = [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=10",
+        f"{timeout_seconds}s",
         "iperf3",
         "-J",
         "-c",
@@ -216,6 +249,7 @@ def _run_iperf_many_to_one(
     matrix: dict[str, object],
     output_dir: Path,
 ) -> list[dict[str, object]]:
+    _log("many_to_one start")
     traffic = matrix["traffic"]
     duration_seconds = int(traffic["duration_seconds"])
     ramp_time_seconds = int(traffic["ramp_time_seconds"])
@@ -246,6 +280,7 @@ def _run_iperf_many_to_one(
             _start_background(identity_file, ssh_user, server_host, _iperf_server_command(port, protocol))
             _wait_for_tcp(identity_file, ssh_user, server_host, port)
         case_id = str(case["case_id"])
+        _log(f"many_to_one case start case_id={case_id}")
         metrics: list[dict[str, float]] = []
         for index, client in enumerate(clients):
             command = _iperf_client_command(
@@ -258,7 +293,14 @@ def _run_iperf_many_to_one(
                 int(case.get("parallel_streams", 1)),
                 int(case.get("udp_target_mbps", 0)) if protocol == "udp" else None,
             )
-            result = _ssh_run(identity_file, ssh_user, str(client["fixed_ip"]), command)
+            result = _ssh_run(
+                identity_file,
+                ssh_user,
+                str(client["fixed_ip"]),
+                command,
+                timeout_seconds=duration_seconds + ramp_time_seconds + 90,
+            )
+            _log(f"many_to_one client done case_id={case_id} client={client['name']} rc={result.returncode}")
             stdout_path = raw_dir / f"{case_id}_{client['name']}.stdout"
             stdout_path.write_text(result.stdout, encoding="utf-8")
             if result.returncode != 0:
@@ -288,6 +330,8 @@ def _run_iperf_many_to_one(
         rows.append(row)
         for port in ports:
             _kill_matching(identity_file, ssh_user, server_host, f"iperf3 -s -p {port}")
+        _log(f"many_to_one case done case_id={case_id}")
+    _log("many_to_one done")
     return rows
 
 
@@ -328,6 +372,7 @@ def _run_http_many_to_one(
     matrix: dict[str, object],
     output_dir: Path,
 ) -> list[dict[str, object]]:
+    _log("http_many_to_one start")
     identity_file = str(output_dir / "id_rsa")
     ssh_user = str(inventory["ssh_user"])
     server = inventory["server"]
@@ -396,7 +441,13 @@ payload = {{
 }}
 print(json.dumps(payload))
 """
-        result = _ssh_run(identity_file, ssh_user, str(client["fixed_ip"]), f"python3 - <<'PY'\n{script}\nPY")
+        result = _ssh_run(
+            identity_file,
+            ssh_user,
+            str(client["fixed_ip"]),
+            f"python3 - <<'PY'\n{script}\nPY",
+            timeout_seconds=int(matrix["traffic"]["duration_seconds"]) + 60,
+        )
         stdout_path = raw_dir / f"http_{client['name']}.stdout"
         stdout_path.write_text(result.stdout, encoding="utf-8")
         if result.returncode != 0:
@@ -462,6 +513,7 @@ def _run_ring(
     matrix: dict[str, object],
     output_dir: Path,
 ) -> list[dict[str, object]]:
+    _log("ring start")
     identity_file = str(output_dir / "id_rsa")
     ssh_user = str(inventory["ssh_user"])
     participants = inventory["participants"]
@@ -489,6 +541,7 @@ def _run_ring(
             _wait_for_tcp(identity_file, ssh_user, dest_ip, port)
         metrics = []
         case_id = str(case["case_id"])
+        _log(f"ring case start case_id={case_id}")
         for flow in flows:
             source_ip = str(flow["source"]["fixed_ip"])
             command = _iperf_client_command(
@@ -501,7 +554,16 @@ def _run_ring(
                 int(case.get("parallel_streams", 1)),
                 int(case.get("udp_target_mbps", 0)) if protocol == "udp" else None,
             )
-            result = _ssh_run(identity_file, ssh_user, source_ip, command)
+            result = _ssh_run(
+                identity_file,
+                ssh_user,
+                source_ip,
+                command,
+                timeout_seconds=duration_seconds + ramp_time_seconds + 90,
+            )
+            _log(
+                f"ring flow done case_id={case_id} source={flow['source']['name']} dest={flow['dest']['name']} rc={result.returncode}"
+            )
             raw_name = f"{case_id}_{flow['source']['name']}_to_{flow['dest']['name']}"
             (raw_dir / f"{raw_name}.stdout").write_text(result.stdout, encoding="utf-8")
             if result.returncode != 0:
@@ -541,6 +603,8 @@ def _run_ring(
         rows.append(row)
         for flow in flows:
             _kill_matching(identity_file, ssh_user, str(flow["dest"]["fixed_ip"]), f"iperf3 -s -p {int(flow['port'])}")
+        _log(f"ring case done case_id={case_id}")
+    _log("ring done")
     return rows
 
 
@@ -589,6 +653,9 @@ def main() -> int:
     matrix = json.loads(Path(args.matrix).read_text(encoding="utf-8"))
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    global _LOG_PATH
+    _LOG_PATH = output_dir / "controller_runner.progress.log"
+    _log("main start")
 
     scenario_slug = str(matrix["scenario_slug"])
     rows: list[dict[str, object]]
@@ -623,6 +690,7 @@ def main() -> int:
     )
     _write_csv(output_dir, rows)
     _write_markdown(output_dir, scenario_slug, rows)
+    _log("main done")
     return 0
 
 

@@ -19,12 +19,15 @@ Use pre-baked images when:
   - used for distributed fio controller and worker VMs
 - `ubuntu-netbench`
   - used for controller/server/client overlay traffic benchmarks
+- `ubuntu-mixed-benchmark`
+  - used for the mixed pressure scenario that overlaps churn, fio, and network load
 
 See the local image docs:
 
 - [images/ubuntu-stress-ng/README.md](/home/guillaume.boutry@canonical.com/Documents/canonical/projects/openstack/rally-ci-churn/images/ubuntu-stress-ng/README.md)
 - [images/ubuntu-fio/README.md](/home/guillaume.boutry@canonical.com/Documents/canonical/projects/openstack/rally-ci-churn/images/ubuntu-fio/README.md)
 - [images/ubuntu-netbench/README.md](/home/guillaume.boutry@canonical.com/Documents/canonical/projects/openstack/rally-ci-churn/images/ubuntu-netbench/README.md)
+- [images/ubuntu-mixed-benchmark/README.md](/home/guillaume.boutry@canonical.com/Documents/canonical/projects/openstack/rally-ci-churn/images/ubuntu-mixed-benchmark/README.md)
 
 ## Build model
 
