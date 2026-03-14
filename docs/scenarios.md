@@ -46,6 +46,29 @@
 - common presets:
   `fio-distributed`
 
+### `CIChurn.net_many_to_one`
+
+- topology:
+  one controller VM, one benchmark server VM, many client VMs
+- intent:
+  maximize one-to-many overlay traffic with either pure `iperf3` or a
+  volume-backed HTTP download variant
+- template:
+  `tasks/net_many_to_one.yaml.j2`
+- common presets:
+  `net-many-to-one`, `net-many-to-one-http`
+
+### `CIChurn.net_ring`
+
+- topology:
+  one controller VM plus many benchmark participants in a bounded ring
+- intent:
+  maximize east-west overlay traffic without the full-mesh `N^2` explosion
+- template:
+  `tasks/net_ring.yaml.j2`
+- common presets:
+  `net-ring`
+
 ### `tenant_churn_autonomous_vm`
 
 - topology:
@@ -69,3 +92,5 @@ for the direct template-to-scenario mapping.
 - choose `quota_edge_autonomous_vm` for refusal and saturation behavior
 - choose `tenant_churn_autonomous_vm` for project/network churn
 - choose `fio_distributed` for controller/worker volume benchmarking
+- choose `net_many_to_one` for one-server-many-clients network pressure
+- choose `net_ring` for bounded east-west overlay traffic

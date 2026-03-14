@@ -1,0 +1,68 @@
+{% set title = title or "Ring east-west network benchmark" %}
+{% set description = description or "One controller plus many participants communicating in a bounded ring topology" %}
+{% set cloud_cfg = cloud or {} %}
+{% set network_cfg = network or {} %}
+{% set controller_cfg = controller or {} %}
+{% set traffic_cfg = traffic or {} %}
+{% set ring_cfg = ring or {} %}
+{% set artifacts_cfg = artifacts or {} %}
+---
+version: 2
+title: "{{ title }}"
+description: "{{ description }}"
+tags:
+  - rally
+  - openstack
+  - network
+  - iperf3
+  - ring
+  - east-west
+subtasks:
+  - title: "Ring east-west network run"
+    description: "Boot one controller and many benchmark participants"
+    contexts:
+      network@openstack:
+        start_cidr: "{{ network_cfg.start_cidr or '10.79.0.0/22' }}"
+        networks_per_tenant: 1
+        subnets_per_network: 1
+{% if network_cfg.dns_nameservers %}
+        dns_nameservers:
+{% for dns_nameserver in network_cfg.dns_nameservers %}
+          - "{{ dns_nameserver }}"
+{% endfor %}
+{% endif %}
+        router:
+          external_gateway_info:
+            network_id: "{{ cloud_cfg.external_network_id }}"
+    scenario:
+      CIChurn.net_ring:
+        controller_image:
+          name: "{{ cloud_cfg.controller_image_name }}"
+        controller_flavor:
+          name: "{{ cloud_cfg.controller_flavor_name }}"
+        participant_image:
+          name: "{{ cloud_cfg.participant_image_name or cloud_cfg.controller_image_name }}"
+        participant_flavor:
+          name: "{{ cloud_cfg.participant_flavor_name or cloud_cfg.controller_flavor_name }}"
+        external_network_name: "{{ cloud_cfg.external_network_name }}"
+        ssh_user: "{{ controller_cfg.ssh_user or 'ubuntu' }}"
+        ssh_connect_timeout_seconds: {{ controller_cfg.ssh_connect_timeout_seconds or 300 }}
+        command_timeout_seconds: {{ controller_cfg.command_timeout_seconds or 0 }}
+        participant_count: {{ ring_cfg.participant_count or 8 }}
+        protocols: {{ traffic_cfg.protocols or ['tcp', 'udp'] }}
+        duration_seconds: {{ traffic_cfg.duration_seconds or 20 }}
+        ramp_time_seconds: {{ traffic_cfg.ramp_time_seconds or 5 }}
+        base_port: {{ traffic_cfg.base_port or 5201 }}
+        neighbors_per_vm: {{ ring_cfg.neighbors_per_vm or 1 }}
+        bidirectional: {{ ring_cfg.bidirectional if ring_cfg.bidirectional is defined else true }}
+        parallel_streams: {{ traffic_cfg.parallel_streams or [4] }}
+        udp_target_mbps: {{ traffic_cfg.udp_target_mbps or [300] }}
+        artifacts_root_dir: "{{ artifacts_cfg.root_dir or 'artifacts' }}"
+    runner:
+      constant:
+        times: 1
+        concurrency: 1
+        timeout: {{ controller_cfg.command_timeout_seconds or 0 if (controller_cfg.command_timeout_seconds or 0) > 0 else 86400 }}
+    sla:
+      failure_rate:
+        max: 0

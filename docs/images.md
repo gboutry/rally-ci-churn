@@ -17,11 +17,14 @@ Use pre-baked images when:
   - used for the `stress-ng` preset and related autonomous VM runs
 - `ubuntu-fio`
   - used for distributed fio controller and worker VMs
+- `ubuntu-netbench`
+  - used for controller/server/client overlay traffic benchmarks
 
 See the local image docs:
 
 - [images/ubuntu-stress-ng/README.md](/home/guillaume.boutry@canonical.com/Documents/canonical/projects/openstack/rally-ci-churn/images/ubuntu-stress-ng/README.md)
 - [images/ubuntu-fio/README.md](/home/guillaume.boutry@canonical.com/Documents/canonical/projects/openstack/rally-ci-churn/images/ubuntu-fio/README.md)
+- [images/ubuntu-netbench/README.md](/home/guillaume.boutry@canonical.com/Documents/canonical/projects/openstack/rally-ci-churn/images/ubuntu-netbench/README.md)
 
 ## Build model
 

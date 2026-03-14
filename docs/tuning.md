@@ -65,6 +65,26 @@ Guidance:
 - keep `volume_size_gib` large enough for the fio access pattern
 - raise `numjobs` and `iodepths` only after confirming the baseline topology works
 
+### Network traffic scenarios
+
+Key knobs:
+
+- `client_count`
+- `participant_count`
+- `neighbors_per_vm`
+- `protocols`
+- `parallel_streams`
+- `udp_target_mbps`
+- `duration_seconds`
+
+Guidance:
+
+- scale `client_count` first for the one-server-many-clients shape
+- scale `participant_count` first for the east-west ring shape
+- keep `neighbors_per_vm=1` until you know the cloud can sustain the baseline
+- increase TCP `parallel_streams` before increasing VM counts if you are flow-limited
+- use UDP targets carefully; packet loss is often the first useful signal
+
 ## Flavor and image tuning
 
 Flavor and image guidance is intentionally split out:

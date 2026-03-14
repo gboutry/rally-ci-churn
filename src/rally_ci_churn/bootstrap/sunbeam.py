@@ -24,6 +24,9 @@ SUPPORTED_PRESETS = {
     "spiky",
     "stress-ng",
     "fio-distributed",
+    "net-many-to-one",
+    "net-many-to-one-http",
+    "net-ring",
     "failure-storm",
     "quota-edge",
     "tenant-churn",
@@ -188,6 +191,13 @@ def _pick_custom_image(clouds_yaml: Path, desired_name: str) -> str:
     )
 
 
+def _pick_preferred_flavor(clouds_yaml: Path, preferred: tuple[str, ...], fallback_prefix: str = "m1.") -> str:
+    flavor_names = _run_openstack(
+        clouds_yaml, "sunbeam-admin", "flavor", "list", "-f", "value", "-c", "Name"
+    ).splitlines()
+    return _pick_exact_or_prefix([name for name in flavor_names if name], preferred, fallback_prefix)
+
+
 def _build_smoke_preset(clouds_yaml: Path, config: dict[str, object]) -> tuple[dict[str, object], str]:
     rendered = _build_base_args(clouds_yaml, config)
     rendered["description"] = "Autonomous CI-like runner churn smoke"
@@ -290,6 +300,111 @@ def _build_fio_distributed_preset(
     rendered.pop("workload", None)
     rendered.pop("image_prep", None)
     return rendered, "tasks/fio_distributed.yaml.j2"
+
+
+def _build_net_many_to_one_preset(
+    clouds_yaml: Path,
+    config: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    rendered = _build_base_args(clouds_yaml, config)
+    image_name = _pick_custom_image(clouds_yaml, "ubuntu-netbench")
+    flavor_name = _pick_preferred_flavor(clouds_yaml, ("m1.netbench", "m1.small"))
+    rendered["title"] = "Many-to-one network benchmark"
+    rendered["description"] = "One server, many clients, and one controller over a tenant overlay network"
+    rendered["cloud"] = {
+        "controller_image_name": image_name,
+        "controller_flavor_name": flavor_name,
+        "server_image_name": image_name,
+        "server_flavor_name": flavor_name,
+        "client_image_name": image_name,
+        "client_flavor_name": flavor_name,
+        "external_network_name": rendered["cloud"]["external_network_name"],
+        "external_network_id": rendered["cloud"]["external_network_id"],
+    }
+    rendered["network"]["start_cidr"] = "10.78.0.0/22"
+    rendered["controller"] = {
+        "ssh_user": "ubuntu",
+        "ssh_connect_timeout_seconds": 300,
+        "command_timeout_seconds": 0,
+    }
+    rendered["traffic"] = {
+        "mode": "iperf3",
+        "protocols": ["tcp", "udp"],
+        "duration_seconds": 20,
+        "ramp_time_seconds": 5,
+        "base_port": 5201,
+        "flow_direction": "server_to_client",
+        "parallel_streams": [4],
+        "udp_target_mbps": [500],
+    }
+    rendered["many_to_one"] = {
+        "client_count": 8,
+    }
+    rendered["server_volume"] = {
+        "size_gib": 2,
+        "volume_type": None,
+        "file_count": 4,
+        "file_size_mib": 128,
+    }
+    rendered["artifacts"] = {"root_dir": "artifacts"}
+    rendered.pop("storage", None)
+    rendered.pop("workload", None)
+    rendered.pop("image_prep", None)
+    return rendered, "tasks/net_many_to_one.yaml.j2"
+
+
+def _build_net_many_to_one_http_preset(
+    clouds_yaml: Path,
+    config: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    rendered, task_path = _build_net_many_to_one_preset(clouds_yaml, config)
+    rendered["description"] = "One volume-backed HTTP server, many clients, and one controller"
+    rendered["traffic"]["mode"] = "http_volume"
+    rendered["traffic"]["protocols"] = []
+    return rendered, task_path
+
+
+def _build_net_ring_preset(
+    clouds_yaml: Path,
+    config: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    rendered = _build_base_args(clouds_yaml, config)
+    image_name = _pick_custom_image(clouds_yaml, "ubuntu-netbench")
+    flavor_name = _pick_preferred_flavor(clouds_yaml, ("m1.netbench", "m1.small"))
+    rendered["title"] = "Ring east-west network benchmark"
+    rendered["description"] = "One controller plus many participants communicating in a bounded ring topology"
+    rendered["cloud"] = {
+        "controller_image_name": image_name,
+        "controller_flavor_name": flavor_name,
+        "participant_image_name": image_name,
+        "participant_flavor_name": flavor_name,
+        "external_network_name": rendered["cloud"]["external_network_name"],
+        "external_network_id": rendered["cloud"]["external_network_id"],
+    }
+    rendered["network"]["start_cidr"] = "10.79.0.0/22"
+    rendered["controller"] = {
+        "ssh_user": "ubuntu",
+        "ssh_connect_timeout_seconds": 300,
+        "command_timeout_seconds": 0,
+    }
+    rendered["traffic"] = {
+        "protocols": ["tcp", "udp"],
+        "duration_seconds": 20,
+        "ramp_time_seconds": 5,
+        "base_port": 5201,
+        "parallel_streams": [4],
+        "udp_target_mbps": [300],
+    }
+    rendered["ring"] = {
+        "participant_count": 8,
+        "neighbors_per_vm": 1,
+        "bidirectional": True,
+    }
+    rendered["artifacts"] = {"root_dir": "artifacts"}
+    rendered.pop("storage", None)
+    rendered.pop("workload", None)
+    rendered.pop("image_prep", None)
+    return rendered, "tasks/net_ring.yaml.j2"
 
 
 def _build_failure_storm_preset(
@@ -425,6 +540,9 @@ def main(argv: list[str] | None = None) -> int:
             "spiky": _build_spiky_preset,
             "stress-ng": _build_stress_ng_preset,
             "fio-distributed": _build_fio_distributed_preset,
+            "net-many-to-one": _build_net_many_to_one_preset,
+            "net-many-to-one-http": _build_net_many_to_one_http_preset,
+            "net-ring": _build_net_ring_preset,
             "failure-storm": _build_failure_storm_preset,
             "quota-edge": _build_quota_edge_preset,
             "tenant-churn": _build_tenant_churn_preset,

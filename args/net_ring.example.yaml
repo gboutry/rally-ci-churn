@@ -1,0 +1,29 @@
+title: "Ring east-west network benchmark"
+description: "One controller plus many participants communicating in a bounded ring topology"
+cloud:
+  controller_image_name: "ubuntu-netbench"
+  controller_flavor_name: "m1.netbench"
+  participant_image_name: "ubuntu-netbench"
+  participant_flavor_name: "m1.netbench"
+  external_network_name: "external-network"
+  external_network_id: "REPLACE_ME"
+network:
+  start_cidr: "10.79.0.0/22"
+  dns_nameservers: []
+controller:
+  ssh_user: "ubuntu"
+  ssh_connect_timeout_seconds: 300
+  command_timeout_seconds: 0
+traffic:
+  protocols: ["tcp", "udp"]
+  duration_seconds: 20
+  ramp_time_seconds: 5
+  base_port: 5201
+  parallel_streams: [4]
+  udp_target_mbps: [300]
+ring:
+  participant_count: 8
+  neighbors_per_vm: 1
+  bidirectional: true
+artifacts:
+  root_dir: "artifacts"

@@ -21,6 +21,9 @@ Supported presets:
   spiky
   stress-ng
   fio-distributed
+  net-many-to-one
+  net-many-to-one-http
+  net-ring
   failure-storm
   quota-edge
   tenant-churn

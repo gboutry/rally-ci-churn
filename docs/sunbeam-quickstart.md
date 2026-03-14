@@ -54,6 +54,9 @@ rally task start tasks/autonomous_vm_waves.yaml.j2 \
 ./scripts/setup_uv.sh /path/to/clouds.yaml quota-edge
 ./scripts/setup_uv.sh /path/to/clouds.yaml tenant-churn
 ./scripts/setup_uv.sh /path/to/clouds.yaml fio-distributed
+./scripts/setup_uv.sh /path/to/clouds.yaml net-many-to-one
+./scripts/setup_uv.sh /path/to/clouds.yaml net-many-to-one-http
+./scripts/setup_uv.sh /path/to/clouds.yaml net-ring
 ./scripts/setup_uv.sh /path/to/clouds.yaml stress-ng
 ```
 

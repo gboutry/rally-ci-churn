@@ -44,6 +44,26 @@ Expected files:
 - `raw/*.json`
 - `raw/*.stdout`
 
+## Network traffic scenarios
+
+These scenarios also write local artifact bundles on the Rally host.
+
+Artifact layout:
+
+- `artifacts/<task-uuid>/net-many-to-one/iteration-0000/`
+- `artifacts/<task-uuid>/net-ring/iteration-0000/`
+
+Expected files:
+
+- `summary.md`
+- `summary.csv`
+- `summary.json`
+- `manifest.json`
+- `inventory.json`
+- `matrix.json`
+- `raw/*.json`
+- `raw/*.stdout`
+
 ## How to inspect results
 
 - use `rally task report <task-id> --out output.html` for human review

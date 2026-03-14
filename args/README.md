@@ -10,6 +10,8 @@
 - `autonomous_vm.example.yaml`
 - `spiky_autonomous_vm.example.yaml`
 - `fio_distributed.example.yaml`
+- `net_many_to_one.example.yaml`
+- `net_ring.example.yaml`
 
 These are reference shapes, not the preferred Sunbeam operator path.
 
@@ -24,6 +26,9 @@ Typical generated files:
 - `args/quota-edge.yaml`
 - `args/tenant-churn.yaml`
 - `args/fio-distributed.yaml`
+- `args/net-many-to-one.yaml`
+- `args/net-many-to-one-http.yaml`
+- `args/net-ring.yaml`
 - `args/stress-ng.yaml`
 
 These are produced by:

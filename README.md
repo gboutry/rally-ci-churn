@@ -6,6 +6,7 @@ Sunbeam-first bootstrap path and a small set of custom scenarios for:
 - autonomous ephemeral CI runner churn
 - bursty and quota-edge VM launch behavior
 - distributed fio benchmarking with controller and worker VMs
+- controller-driven overlay network benchmarks for one-to-many and east-west traffic
 
 The repo is intentionally focused on benchmark orchestration and result
 collection. It is not a general OpenStack operations toolkit.
@@ -36,6 +37,10 @@ rally task start tasks/autonomous_vm_waves.yaml.j2 \
   - launch-until-refusal probing for quota and scheduler pressure
 - `CIChurn.fio_distributed`
   - one fio controller VM plus many fio worker VMs with attached Cinder volumes
+- `CIChurn.net_many_to_one`
+  - one controller VM, one benchmark server VM, and many clients for overlay traffic tests
+- `CIChurn.net_ring`
+  - one controller VM and many participants communicating in a bounded east-west ring
 
 Task templates live under [tasks/README.md](/home/guillaume.boutry@canonical.com/Documents/canonical/projects/openstack/rally-ci-churn/tasks/README.md).
 

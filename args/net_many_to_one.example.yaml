@@ -1,0 +1,36 @@
+title: "Many-to-one network benchmark"
+description: "One server, many clients, and one controller over a tenant overlay network"
+cloud:
+  controller_image_name: "ubuntu-netbench"
+  controller_flavor_name: "m1.netbench"
+  server_image_name: "ubuntu-netbench"
+  server_flavor_name: "m1.netbench"
+  client_image_name: "ubuntu-netbench"
+  client_flavor_name: "m1.netbench"
+  external_network_name: "external-network"
+  external_network_id: "REPLACE_ME"
+network:
+  start_cidr: "10.78.0.0/22"
+  dns_nameservers: []
+controller:
+  ssh_user: "ubuntu"
+  ssh_connect_timeout_seconds: 300
+  command_timeout_seconds: 0
+traffic:
+  mode: "iperf3"
+  protocols: ["tcp", "udp"]
+  duration_seconds: 20
+  ramp_time_seconds: 5
+  base_port: 5201
+  flow_direction: "server_to_client"
+  parallel_streams: [4]
+  udp_target_mbps: [500]
+many_to_one:
+  client_count: 8
+server_volume:
+  size_gib: 2
+  volume_type: null
+  file_count: 4
+  file_size_mib: 128
+artifacts:
+  root_dir: "artifacts"

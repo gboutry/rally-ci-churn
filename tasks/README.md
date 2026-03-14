@@ -19,6 +19,12 @@ Task templates map directly to the custom Rally scenarios.
 - `fio_distributed.yaml.j2`
   - controller/worker fio benchmarking
   - typically used with `fio-distributed`
+- `net_many_to_one.yaml.j2`
+  - one server, many clients, and one controller
+  - typically used with `net-many-to-one` or `net-many-to-one-http`
+- `net_ring.yaml.j2`
+  - bounded east-west ring communication
+  - typically used with `net-ring`
 
 ## Normal workflow
 
