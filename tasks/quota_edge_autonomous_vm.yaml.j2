@@ -3,9 +3,14 @@
 {% set scenario_cfg = scenario or {} %}
 {% set cloud_cfg = cloud or {} %}
 {% set network_cfg = network or {} %}
+{% set user_cfg = users or {} %}
+{% set quota_context_cfg = quotas or {} %}
+{% set nova_quota_cfg = quota_context_cfg.nova if quota_context_cfg.nova is defined else {} %}
+{% set cinder_quota_cfg = quota_context_cfg.cinder if quota_context_cfg.cinder is defined else {} %}
+{% set neutron_quota_cfg = quota_context_cfg.neutron if quota_context_cfg.neutron is defined else {} %}
 {% set storage_cfg = storage or {} %}
 {% set workload_cfg = workload or {} %}
-{% set quota_cfg = quota_edge or {} %}
+{% set quota_edge_cfg = quota_edge or {} %}
 ---
 version: 2
 title: "{{ title }}"
@@ -21,6 +26,31 @@ subtasks:
   - title: "Quota-edge autonomous run"
     description: "Launch autonomous runners until quota or scheduler failures accumulate"
     contexts:
+      users@openstack:
+        tenants: {{ user_cfg.tenants or 1 }}
+        users_per_tenant: {{ user_cfg.users_per_tenant or 1 }}
+      quotas@openstack:
+        nova:
+          instances: {{ nova_quota_cfg.instances if nova_quota_cfg.instances is defined else -1 }}
+          cores: {{ nova_quota_cfg.cores if nova_quota_cfg.cores is defined else -1 }}
+          ram: {{ nova_quota_cfg.ram if nova_quota_cfg.ram is defined else -1 }}
+          floating_ips: {{ nova_quota_cfg.floating_ips if nova_quota_cfg.floating_ips is defined else -1 }}
+          fixed_ips: {{ nova_quota_cfg.fixed_ips if nova_quota_cfg.fixed_ips is defined else -1 }}
+          key_pairs: {{ nova_quota_cfg.key_pairs if nova_quota_cfg.key_pairs is defined else -1 }}
+          security_groups: {{ nova_quota_cfg.security_groups if nova_quota_cfg.security_groups is defined else -1 }}
+          security_group_rules: {{ nova_quota_cfg.security_group_rules if nova_quota_cfg.security_group_rules is defined else -1 }}
+        cinder:
+          gigabytes: {{ cinder_quota_cfg.gigabytes if cinder_quota_cfg.gigabytes is defined else -1 }}
+          snapshots: {{ cinder_quota_cfg.snapshots if cinder_quota_cfg.snapshots is defined else -1 }}
+          volumes: {{ cinder_quota_cfg.volumes if cinder_quota_cfg.volumes is defined else -1 }}
+        neutron:
+          network: {{ neutron_quota_cfg.network if neutron_quota_cfg.network is defined else -1 }}
+          subnet: {{ neutron_quota_cfg.subnet if neutron_quota_cfg.subnet is defined else -1 }}
+          port: {{ neutron_quota_cfg.port if neutron_quota_cfg.port is defined else -1 }}
+          router: {{ neutron_quota_cfg.router if neutron_quota_cfg.router is defined else -1 }}
+          floatingip: {{ neutron_quota_cfg.floatingip if neutron_quota_cfg.floatingip is defined else -1 }}
+          security_group: {{ neutron_quota_cfg.security_group if neutron_quota_cfg.security_group is defined else -1 }}
+          security_group_rule: {{ neutron_quota_cfg.security_group_rule if neutron_quota_cfg.security_group_rule is defined else -1 }}
       network@openstack:
         networks_per_tenant: 1
         subnets_per_network: 1
@@ -57,10 +87,10 @@ subtasks:
         console_log_length: {{ scenario_cfg.console_log_length or 400 }}
         allow_guest_errors: {{ scenario_cfg.allow_guest_errors or false }}
         allow_guest_timeouts: {{ scenario_cfg.allow_guest_timeouts or false }}
-        duration_seconds: {{ quota_cfg.duration_seconds or 900 }}
-        launches_per_tick: {{ quota_cfg.launches_per_tick or 2 }}
-        launch_tick_seconds: {{ quota_cfg.launch_tick_seconds or 1 }}
-        max_consecutive_launch_failures: {{ quota_cfg.max_consecutive_launch_failures or 10 }}
+        duration_seconds: {{ quota_edge_cfg.duration_seconds or 900 }}
+        launches_per_tick: {{ quota_edge_cfg.launches_per_tick or 2 }}
+        launch_tick_seconds: {{ quota_edge_cfg.launch_tick_seconds or 1 }}
+        max_consecutive_launch_failures: {{ quota_edge_cfg.max_consecutive_launch_failures or 10 }}
     runner:
       constant:
         times: 1

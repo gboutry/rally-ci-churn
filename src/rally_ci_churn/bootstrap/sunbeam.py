@@ -158,6 +158,36 @@ def _build_base_args(clouds_yaml: Path, config: dict[str, object]) -> dict[str, 
         "network": {
             "dns_nameservers": _select_sunbeam_dns(clouds_yaml),
         },
+        "users": {
+            "tenants": 1,
+            "users_per_tenant": 1,
+        },
+        "quotas": {
+            "nova": {
+                "instances": -1,
+                "cores": -1,
+                "ram": -1,
+                "floating_ips": -1,
+                "fixed_ips": -1,
+                "key_pairs": -1,
+                "security_groups": -1,
+                "security_group_rules": -1,
+            },
+            "cinder": {
+                "gigabytes": -1,
+                "snapshots": -1,
+                "volumes": -1,
+            },
+            "neutron": {
+                "network": -1,
+                "subnet": -1,
+                "port": -1,
+                "router": -1,
+                "floatingip": -1,
+                "security_group": -1,
+                "security_group_rule": -1,
+            },
+        },
         "storage": {
             "artifact_container": "rally-ci-churn",
             "artifact_ttl_seconds": 0,
