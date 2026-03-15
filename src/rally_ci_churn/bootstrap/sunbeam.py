@@ -141,7 +141,8 @@ def _build_base_args(clouds_yaml: Path, config: dict[str, object]) -> dict[str, 
             "family": "autonomous_vm",
             "name": "CIChurn.boot_autonomous_vm",
             "waves": 1,
-            "concurrency": 1,
+            "vm_count": 1,
+            "task_concurrency": 1,
             "timeout_seconds": 3600,
             "timeout_mode": "fail",
             "console_log_length": 400,
@@ -212,7 +213,8 @@ def _build_steady_preset(clouds_yaml: Path, config: dict[str, object]) -> tuple[
     rendered = _build_base_args(clouds_yaml, config)
     rendered["description"] = "Autonomous CI-like runner churn with steady waves"
     rendered["scenario"]["waves"] = 5
-    rendered["scenario"]["concurrency"] = 5
+    rendered["scenario"]["vm_count"] = 5
+    rendered["scenario"]["task_concurrency"] = 5
     rendered["workload"]["profile"] = "synthetic_ci"
     return rendered, "tasks/autonomous_vm_waves.yaml.j2"
 
@@ -249,7 +251,8 @@ def _build_stress_ng_preset(clouds_yaml: Path, config: dict[str, object]) -> tup
     rendered["cloud"]["image_name"] = _pick_custom_image(clouds_yaml, "ubuntu-stress-ng")
     rendered["cloud"]["flavor_name"] = "m1.stress-ng"
     rendered["scenario"]["waves"] = 1
-    rendered["scenario"]["concurrency"] = 3
+    rendered["scenario"]["vm_count"] = 3
+    rendered["scenario"]["task_concurrency"] = 3
     rendered["workload"] = {
         "profile": "stress_ng",
         "params": {
@@ -573,11 +576,13 @@ def _build_tenant_churn_preset(
     rendered = _build_base_args(clouds_yaml, config)
     rendered["description"] = "Autonomous runner churn across short-lived tenants"
     rendered["scenario"]["waves"] = 1
-    rendered["scenario"]["concurrency"] = 1
+    rendered["scenario"]["vm_count"] = 1
+    rendered["scenario"]["task_concurrency"] = 1
     rendered["workload"]["profile"] = "smoke"
     rendered["tenant_churn"] = {
         "cycles": 10,
         "vms_per_cycle": 2,
+        "task_concurrency": 2,
     }
     return rendered, "tasks/tenant_churn_autonomous_vm.yaml.j2"
 

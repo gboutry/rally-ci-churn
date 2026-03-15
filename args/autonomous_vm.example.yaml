@@ -5,7 +5,8 @@ scenario:
   family: "autonomous_vm"
   name: "CIChurn.boot_autonomous_vm"
   waves: 3
-  concurrency: 2
+  vm_count: 2
+  task_concurrency: 2
   timeout_seconds: 3600
   timeout_mode: "fail"
   console_log_length: 400

@@ -5,6 +5,8 @@
 {% set network_cfg = network or {} %}
 {% set storage_cfg = storage or {} %}
 {% set workload_cfg = workload or {} %}
+{% set wave_vm_count = scenario_cfg.vm_count or scenario_cfg.concurrency or 1 %}
+{% set runner_concurrency = scenario_cfg.task_concurrency or scenario_cfg.runner_concurrency or scenario_cfg.concurrency or 1 %}
 ---
 version: 2
 title: "{{ title }}"
@@ -18,7 +20,7 @@ tags:
 subtasks:
 {% for wave in range((scenario_cfg.waves or 1) | int) %}
   - title: "Wave {{ wave + 1 }}/{{ scenario_cfg.waves or 1 }}"
-    description: "Launch {{ scenario_cfg.concurrency or 1 }} autonomous runners in parallel"
+    description: "Launch {{ wave_vm_count }} autonomous runners with Rally runner concurrency {{ runner_concurrency }}"
     contexts:
       network@openstack:
         networks_per_tenant: 1
@@ -59,8 +61,8 @@ subtasks:
         allow_guest_timeouts: {{ scenario_cfg.allow_guest_timeouts or false }}
     runner:
       constant:
-        times: {{ scenario_cfg.concurrency or 1 }}
-        concurrency: {{ scenario_cfg.concurrency or 1 }}
+        times: {{ wave_vm_count }}
+        concurrency: {{ runner_concurrency }}
         timeout: {{ scenario_cfg.timeout_seconds or 3600 if (scenario_cfg.timeout_seconds or 3600) > 0 else 86400 }}
     sla:
       failure_rate:

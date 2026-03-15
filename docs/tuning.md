@@ -7,14 +7,16 @@
 Key knobs:
 
 - `waves`
-- `concurrency`
+- `vm_count`
+- `task_concurrency`
 - `timeout_seconds`
 - `timeout_mode`
 - workload profile and workload params
 
 Guidance:
 
-- raise `concurrency` before adding many waves if you want to see live pressure
+- raise `vm_count` when you want more VMs per wave
+- raise `task_concurrency` when you want Rally to overlap more of those wave iterations
 - use more waves when you want repeated control-plane churn with stable shape
 - keep `timeout_seconds` finite unless you explicitly want hangs to persist
 

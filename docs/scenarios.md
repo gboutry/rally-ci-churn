@@ -5,7 +5,7 @@
 ### `CIChurn.boot_autonomous_vm`
 
 - topology:
-  one guest VM per Rally iteration
+  one guest VM per Rally iteration, with waves controlled by task runner settings
 - intent:
   baseline autonomous ephemeral CI runner lifecycle
 - template:
@@ -85,7 +85,8 @@
 ### `tenant_churn_autonomous_vm`
 
 - topology:
-  repeated short-lived projects/networks/users around VM batches
+  repeated short-lived projects/networks/users around VM batches, with
+  per-cycle VM count separate from Rally runner concurrency
 - intent:
   exercise tenant/network lifecycle churn
 - template:

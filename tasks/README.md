@@ -6,6 +6,8 @@ Task templates map directly to the custom Rally scenarios.
 
 - `autonomous_vm_waves.yaml.j2`
   - stable autonomous VM churn
+  - `scenario.vm_count` controls VMs per wave
+  - `scenario.task_concurrency` controls Rally runner overlap
   - typically used with `smoke`, `steady`, or `stress-ng`
 - `spiky_autonomous_vm.yaml.j2`
   - bursty autonomous VM churn
@@ -15,6 +17,8 @@ Task templates map directly to the custom Rally scenarios.
   - typically used with `quota-edge`
 - `tenant_churn_autonomous_vm.yaml.j2`
   - repeated short-lived tenants and VM batches
+  - `tenant_churn.vms_per_cycle` controls cycle size
+  - `tenant_churn.task_concurrency` controls Rally runner overlap
   - typically used with `tenant-churn`
 - `fio_distributed.yaml.j2`
   - controller/worker fio benchmarking
