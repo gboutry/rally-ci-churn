@@ -913,7 +913,11 @@ def main(argv: list[str] | None = None) -> int:
                 _write_manifest(manifest_path, summary_path, manifest)
     finally:
         temp_dir.cleanup()
-    print("Capacity sweep ready.")
+    mode = runtime["execution"]["mode"]
+    if mode == "generate_only":
+        print("Capacity sweep plan generated (dry run — no Rally tasks were executed).")
+    else:
+        print("Capacity sweep complete (all Rally tasks have been executed).")
     print(f"Manifest: {manifest_path}")
     print(f"Summary:  {summary_path}")
     return 0
