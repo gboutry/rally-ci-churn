@@ -225,7 +225,7 @@ def _pick_stress_ng_image(clouds_yaml: Path) -> str:
 
 
 def _pick_stress_ng_flavor(clouds_yaml: Path) -> str:
-    return sunbeam._pick_preferred_flavor(clouds_yaml, ("m1.stress-ng", "m1.netbench", "m1.small"))  # noqa: SLF001
+    return sunbeam._pick_preferred_flavor(clouds_yaml, ("m1.stress-ng", "m1.netbench", "m1.benchmark", "m1.small"))  # noqa: SLF001
 
 
 def _normalize_clouds_for_sweep(clouds_yaml: Path) -> tuple[dict[str, Any], Path, tempfile.TemporaryDirectory[str]]:
@@ -236,13 +236,33 @@ def _normalize_clouds_for_sweep(clouds_yaml: Path) -> tuple[dict[str, Any], Path
     return config, normalized_clouds_yaml, temp_dir
 
 
-def _build_base_args(clouds_yaml: Path, config: dict[str, Any], scenario: str) -> tuple[dict[str, Any], str]:
+def _build_base_args(
+    clouds_yaml: Path,
+    config: dict[str, Any],
+    scenario: str,
+    *,
+    overrides: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], str]:
     spec = SCENARIOS[scenario]
-    args, task_path = sunbeam.build_preset(spec.preset, clouds_yaml, config)
+    image_override = (overrides or {}).get("image_name")
+    flavor_override = (overrides or {}).get("flavor_name")
+    args, task_path = sunbeam.build_preset(
+        spec.preset,
+        clouds_yaml,
+        config,
+        image_override=image_override,
+        flavor_override=flavor_override,
+    )
     if scenario == "spiky":
         args["description"] = "Spiky stress-ng sweep scenario"
-        args["cloud"]["image_name"] = _pick_stress_ng_image(clouds_yaml)
-        args["cloud"]["flavor_name"] = _pick_stress_ng_flavor(clouds_yaml)
+        if image_override:
+            args["cloud"]["image_name"] = image_override
+        else:
+            args["cloud"]["image_name"] = _pick_stress_ng_image(clouds_yaml)
+        if flavor_override:
+            args["cloud"]["flavor_name"] = flavor_override
+        else:
+            args["cloud"]["flavor_name"] = _pick_stress_ng_flavor(clouds_yaml)
         args["workload"] = {
             "profile": "stress_ng",
             "params": {
@@ -638,6 +658,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-vm-count", type=int, default=None)
     parser.add_argument("--max-volume-count", type=int, default=None)
     parser.add_argument("--deployment-name", help="Recorded into the manifest for operator traceability.")
+    parser.add_argument("--image", help="Override all scenario image names with this image.")
+    parser.add_argument("--flavor", help="Override all scenario flavor names with this flavor.")
     return parser
 
 
@@ -653,6 +675,7 @@ def _resolve_runtime_config(args: argparse.Namespace) -> dict[str, Any]:
             "failure_policy": "continue",
             "deployment_name": args.deployment_name or "",
         },
+        "overrides": {},
     }
     config = _merge_dicts(config, _load_yaml(Path(args.config).resolve()) if args.config else {})
     config["levels"] = _parse_levels(args.levels) if args.levels else list(config["levels"])
@@ -671,6 +694,10 @@ def _resolve_runtime_config(args: argparse.Namespace) -> dict[str, Any]:
         config["limits"]["max_vm_count"] = args.max_vm_count
     if args.max_volume_count is not None:
         config["limits"]["max_volume_count"] = args.max_volume_count
+    if args.image:
+        config.setdefault("overrides", {})["image_name"] = args.image
+    if args.flavor:
+        config.setdefault("overrides", {})["flavor_name"] = args.flavor
     return config
 
 
@@ -688,6 +715,7 @@ def main(argv: list[str] | None = None) -> int:
         "levels": runtime["levels"],
         "scenario_order": runtime["scenarios"],
         "execution": runtime["execution"],
+        "overrides": runtime.get("overrides", {}),
         "calibration": {},
         "runs": {},
     }
@@ -698,13 +726,14 @@ def main(argv: list[str] | None = None) -> int:
         key: float(value)
         for key, value in runtime["calibration"].get("assumed_rates", {}).items()
     }
+    overrides = runtime.get("overrides") or {}
     try:
         for scenario_name in runtime["scenarios"]:
             manifest["runs"].setdefault(scenario_name, [])
         for scenario_name in ("fio-distributed", "net-many-to-one", "net-ring"):
             if scenario_name not in runtime["scenarios"] and "mixed-pressure" not in runtime["scenarios"]:
                 continue
-            base_args, task_path = _build_base_args(normalized_clouds_yaml, config, scenario_name)
+            base_args, task_path = _build_base_args(normalized_clouds_yaml, config, scenario_name, overrides=overrides)
             calibration_dir = output_root / "runs" / scenario_name / "calibration"
             args_path = calibration_dir / "args.yaml"
             if scenario_name == "fio-distributed":
@@ -763,7 +792,7 @@ def main(argv: list[str] | None = None) -> int:
         for scenario_name in runtime["scenarios"]:
             for level in runtime["levels"]:
                 spec = SCENARIOS[scenario_name]
-                rendered_args, task_path = _build_base_args(normalized_clouds_yaml, config, scenario_name)
+                rendered_args, task_path = _build_base_args(normalized_clouds_yaml, config, scenario_name, overrides=overrides)
                 _apply_artifact_root(rendered_args, output_root / "artifacts")
                 level_dir = output_root / "runs" / scenario_name / f"level-{level:02d}"
                 args_path = level_dir / "args.yaml"

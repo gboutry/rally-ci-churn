@@ -56,6 +56,31 @@ Useful overrides:
   --cluster-ceph-gbps 200
 ```
 
+## Custom image and flavor
+
+By default each scenario expects a dedicated image (`ubuntu-stress-ng`,
+`ubuntu-fio`, `ubuntu-netbench`).  If you have a single all-in-one image that
+bundles every benchmark tool, pass `--image` and optionally `--flavor` to
+override the per-scenario defaults:
+
+```bash
+./scripts/run_capacity_sweep.sh \
+  --clouds-yaml /home/ubuntu/.config/openstack/clouds.yaml \
+  --image ubuntu-mixed-benchmark \
+  --flavor m1.benchmark
+```
+
+The same overrides can be set in a config file:
+
+```yaml
+overrides:
+  image_name: "ubuntu-mixed-benchmark"
+  flavor_name: "m1.benchmark"
+```
+
+CLI flags take precedence over the config file.  Overrides apply to **every**
+scenario image and flavor field (controller, worker, client, participant, etc.).
+
 Generate-only planning:
 
 ```bash

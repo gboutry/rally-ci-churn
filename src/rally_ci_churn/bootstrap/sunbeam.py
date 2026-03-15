@@ -11,10 +11,33 @@ import shlex
 import stat
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Generator
 from urllib.parse import urlparse
 
 import yaml
+
+_cloud_overrides: dict[str, str] = {}
+
+
+@contextmanager
+def cloud_overrides(
+    *,
+    image: str | None = None,
+    flavor: str | None = None,
+) -> Generator[None, None, None]:
+    """Temporarily override image/flavor selection inside preset builders."""
+    prev = dict(_cloud_overrides)
+    if image:
+        _cloud_overrides["image"] = image
+    if flavor:
+        _cloud_overrides["flavor"] = flavor
+    try:
+        yield
+    finally:
+        _cloud_overrides.clear()
+        _cloud_overrides.update(prev)
 
 
 DEFAULT_PRESET = "smoke"
@@ -220,6 +243,8 @@ def _build_base_args(clouds_yaml: Path, config: dict[str, object]) -> dict[str, 
 
 
 def _pick_custom_image(clouds_yaml: Path, desired_name: str) -> str:
+    if "image" in _cloud_overrides:
+        return _cloud_overrides["image"]
     image_names = _run_openstack(
         clouds_yaml, "sunbeam-admin", "image", "list", "-f", "value", "-c", "Name"
     ).splitlines()
@@ -231,6 +256,8 @@ def _pick_custom_image(clouds_yaml: Path, desired_name: str) -> str:
 
 
 def _pick_preferred_flavor(clouds_yaml: Path, preferred: tuple[str, ...], fallback_prefix: str = "m1.") -> str:
+    if "flavor" in _cloud_overrides:
+        return _cloud_overrides["flavor"]
     flavor_names = _run_openstack(
         clouds_yaml, "sunbeam-admin", "flavor", "list", "-f", "value", "-c", "Name"
     ).splitlines()
@@ -673,14 +700,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _apply_cloud_overrides(
+    args_data: dict[str, object],
+    image_override: str | None,
+    flavor_override: str | None,
+) -> None:
+    """Replace all image/flavor fields in the cloud dict with overrides."""
+    cloud = args_data.get("cloud")
+    if not isinstance(cloud, dict):
+        return
+    if image_override:
+        for key in list(cloud):
+            if key == "image_name" or key.endswith("_image_name"):
+                cloud[key] = image_override
+    if flavor_override:
+        for key in list(cloud):
+            if key == "flavor_name" or key.endswith("_flavor_name"):
+                cloud[key] = flavor_override
+
+
 def build_preset(
     preset: str,
     clouds_yaml: Path,
     config: dict[str, object],
+    *,
+    image_override: str | None = None,
+    flavor_override: str | None = None,
 ) -> tuple[dict[str, object], str]:
     if preset not in PRESET_BUILDERS:
         raise RuntimeError(f"Unsupported preset selector: {preset}")
-    return PRESET_BUILDERS[preset](clouds_yaml, config)
+    with cloud_overrides(image=image_override, flavor=flavor_override):
+        args, task_path = PRESET_BUILDERS[preset](clouds_yaml, config)
+    # Catch hardcoded values not routed through _pick_custom_image / _pick_preferred_flavor.
+    _apply_cloud_overrides(args, image_override, flavor_override)
+    return args, task_path
 
 
 def main(argv: list[str] | None = None) -> int:

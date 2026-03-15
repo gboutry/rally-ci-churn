@@ -13,6 +13,14 @@ scenarios:
   - "net-ring"
   - "mixed-pressure"
 
+# Override the per-scenario image and flavor selections.
+# When set, every scenario uses this image / flavor instead of the
+# built-in defaults (ubuntu-stress-ng, ubuntu-fio, ubuntu-netbench, …).
+# Useful when a single all-in-one image contains every benchmark tool.
+# overrides:
+#   image_name: "ubuntu-mixed-benchmark"
+#   flavor_name: "m1.benchmark"
+
 calibration:
   fio_runtime_seconds: 20
   net_runtime_seconds: 15
