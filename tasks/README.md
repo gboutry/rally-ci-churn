@@ -48,3 +48,10 @@ Use generated preset args instead of editing templates directly:
 rally task validate tasks/<template>.yaml.j2 --task-args-file args/<preset>.yaml
 rally task start tasks/<template>.yaml.j2 --task-args-file args/<preset>.yaml
 ```
+
+The normal operator order is:
+
+- `smoke` for bootstrap connectivity only
+- `steady` for the first real low-resource autonomous VM baseline
+- standalone fio or network presets for single-axis sizing
+- `mixed-pressure` only after those standalone baselines are known

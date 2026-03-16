@@ -3,7 +3,8 @@
 ## What this is
 
 This is the fastest supported path for a new user to bootstrap the repo on a
-Sunbeam cloud and run an initial smoke benchmark.
+Sunbeam cloud, run a connectivity smoke check, and then move to the first real
+baseline.
 
 ## Prerequisites
 
@@ -28,6 +29,12 @@ The bootstrap:
 - writes `args/<preset>.yaml`
 - writes `adminrc`
 
+Generated args files are annotated with:
+
+- what the preset is for
+- which services and images it expects
+- the first knobs to tune for that scenario
+
 ## Create or select a Rally deployment
 
 ```bash
@@ -35,7 +42,7 @@ rally db create
 rally deployment create --fromenv --name sunbeam
 ```
 
-## First run
+## Connectivity smoke
 
 ```bash
 rally task validate tasks/autonomous_vm_waves.yaml.j2 \
@@ -45,7 +52,31 @@ rally task start tasks/autonomous_vm_waves.yaml.j2 \
   --task-args-file args/smoke.yaml
 ```
 
+Treat `smoke` as a bootstrap and low-resource CI check. It validates one VM
+lifecycle, tenant networking, and artifact plumbing, but it is not meant to be
+the first serious churn baseline.
+
+## First real baseline
+
+Once `smoke` passes, switch to `steady`:
+
+```bash
+./scripts/setup_uv.sh /path/to/clouds.yaml steady
+
+rally task validate tasks/autonomous_vm_waves.yaml.j2 \
+  --task-args-file args/steady.yaml
+
+rally task start tasks/autonomous_vm_waves.yaml.j2 \
+  --task-args-file args/steady.yaml
+```
+
+`steady` is the recommended first real autonomous VM baseline on low-resource
+clouds. Tune it before moving to `spiky`, `quota-edge`, or `tenant-churn`.
+
 ## Other presets
+
+Pick exactly one preset, generate its annotated args file, run it, then tune
+the sections called out near the top of the generated YAML.
 
 ```bash
 ./scripts/setup_uv.sh /path/to/clouds.yaml steady
@@ -84,7 +115,9 @@ for the sizing model and output layout.
 - using a copied `clouds.yaml` with broken relative CA paths
 - trying to run `stress-ng` or fio without building and uploading the required
   image first
-- trying to run `mixed-pressure` without building and uploading
-  `ubuntu-mixed-benchmark`
+- trying to run `mixed-pressure` without building and uploading the dedicated
+  `ubuntu-fio`, `ubuntu-netbench`, and `ubuntu-stress-ng` images, or without
+  editing the generated `cloud.*_image_name` fields to point at one combined
+  image
 - missing Swift on autonomous VM scenarios
 - missing Cinder or floating IP support on the distributed fio scenario

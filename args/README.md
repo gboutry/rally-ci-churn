@@ -43,5 +43,9 @@ These are produced by:
 ## Guidance
 
 - prefer generated preset args for Sunbeam
+- generated preset args are annotated with the preset role, required
+	services and images, and the first knobs to tune
 - use the checked-in examples when you need to understand the schema shape
 - treat local generated args as environment-specific, not as stable reference docs
+- treat `smoke` as the smallest connectivity check and `steady` as the first
+	real autonomous VM baseline

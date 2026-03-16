@@ -1,5 +1,15 @@
 # Benchmark Tuning
 
+## Recommended start order
+
+- run `smoke` only when you want the smallest possible bootstrap and CI check
+- move to `steady` for the first real autonomous VM baseline on low-resource
+  clouds
+- tune standalone `fio-distributed`, `net-many-to-one`, and `net-ring`
+  scenarios before using `mixed-pressure`
+- use the annotations at the top of generated `args/<preset>.yaml` files to see
+  which sections to edit first
+
 ## What to tune first
 
 ### Autonomous VM scenarios
@@ -15,6 +25,7 @@ Key knobs:
 
 Guidance:
 
+- use `steady` as the first real baseline and treat `smoke` as connectivity-only
 - raise `vm_count` when you want more VMs per wave
 - raise `task_concurrency` when you want Rally to overlap more of those wave iterations
 - use more waves when you want repeated control-plane churn with stable shape
@@ -92,6 +103,8 @@ Guidance:
 - keep the BM0 smoke preset small; the whole point is overlap, not per-axis peak
 - raise `boot_concurrency` when fixed fio or network groups are slow to provision
 - raise `volume_concurrency` when fio worker volume provisioning is the setup bottleneck
+- size standalone `spiky`, `fio-distributed`, `net-many-to-one`, and `net-ring`
+  before treating `mixed-pressure` as a scale target
 - grow fixed groups before making the churn schedule aggressive
 - use `vm_workers` and `vm_bytes` together when you want churn VMs to apply CPU
   and memory pressure at the same time

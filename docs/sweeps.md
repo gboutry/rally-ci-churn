@@ -93,6 +93,15 @@ Reference config:
 
 - [args/capacity_sweep.example.yaml](./args/capacity_sweep.example.yaml)
 
+## Before you run a sweep
+
+- validate the environment with `smoke`, then use `steady` as the first real
+  autonomous VM baseline
+- build and upload the scenario images the sweep expects, or use one combined
+  image override with `--image`
+- expect `mixed-pressure` to depend on successful sizing of `spiky`,
+  `fio-distributed`, `net-many-to-one`, and `net-ring`
+
 ## How sizing works
 
 When running with `--generate-only`, the sweep uses the configured
@@ -130,6 +139,8 @@ When running with `--generate-only`, the sweep uses the configured
 
 - does not calibrate independently
 - derives its shape from the level-matched standalone plans
+- uses conservative fractions of those standalone plans: `35%` of spiky,
+  `25%` of fio workers, and `20%` of many-to-one and ring participants
 - keeps exactly one controller floating IP
 
 ## Outputs

@@ -28,7 +28,35 @@ rally task start tasks/autonomous_vm_waves.yaml.j2 \
   --task-args-file args/smoke.yaml
 ```
 
+`smoke` is intentionally tiny and should be treated as a connectivity check,
+not as the first real benchmark baseline. After it passes, generate and run
+`steady` for the first meaningful low-resource autonomous VM run:
+
+```bash
+./scripts/setup_uv.sh /path/to/clouds.yaml steady
+rally task validate tasks/autonomous_vm_waves.yaml.j2 \
+  --task-args-file args/steady.yaml
+rally task start tasks/autonomous_vm_waves.yaml.j2 \
+  --task-args-file args/steady.yaml
+```
+
+Generated preset args under `args/` are annotated with the preset role,
+required images and services, and the first knobs to tune for that scenario.
+
 ## Scenario overview
+
+Operator-first starting points:
+
+- `smoke`
+  - smallest possible connectivity and bootstrap check
+- `steady`
+  - recommended first real autonomous VM baseline on low-resource clouds
+- `spiky`, `quota-edge`, `tenant-churn`
+  - specialized autonomous VM variants after `steady` is healthy
+- `fio-distributed`, `net-many-to-one`, `net-ring`
+  - standalone block and network sizing scenarios
+- `mixed-pressure`
+  - advanced composite scenario after standalone sizing is known
 
 - `CIChurn.boot_autonomous_vm`
   - no-FIP, no-SSH autonomous runner lifecycle
