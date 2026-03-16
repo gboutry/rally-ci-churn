@@ -161,6 +161,26 @@ runcmd:
         root_volume_size_gib: int = 20,
         root_volume_type: str | None = None,
     ):
+        return self._boot_benchmark_vm_raw(
+            image,
+            flavor,
+            key_name,
+            security_group_name,
+            boot_from_volume=boot_from_volume,
+            root_volume_size_gib=root_volume_size_gib,
+            root_volume_type=root_volume_type,
+        )
+
+    def _boot_benchmark_vm_raw(
+        self,
+        image,
+        flavor,
+        key_name: str,
+        security_group_name: str,
+        boot_from_volume: bool = False,
+        root_volume_size_gib: int = 20,
+        root_volume_type: str | None = None,
+    ):
         boot_image, boot_kwargs = build_root_volume_boot(
             image,
             enabled=boot_from_volume,
@@ -179,6 +199,30 @@ runcmd:
 
     @atomic.action_timer("fio.worker.boot")
     def _boot_fio_worker(
+        self,
+        image,
+        flavor,
+        key_name: str,
+        security_group_name: str,
+        expected_volumes: int,
+        fio_port: int,
+        boot_from_volume: bool = False,
+        root_volume_size_gib: int = 20,
+        root_volume_type: str | None = None,
+    ):
+        return self._boot_fio_worker_raw(
+            image,
+            flavor,
+            key_name,
+            security_group_name,
+            expected_volumes,
+            fio_port,
+            boot_from_volume=boot_from_volume,
+            root_volume_size_gib=root_volume_size_gib,
+            root_volume_type=root_volume_type,
+        )
+
+    def _boot_fio_worker_raw(
         self,
         image,
         flavor,
@@ -626,6 +670,7 @@ class MixedPressureScenario(_MixedPressureBase):
         boot_from_volume=False,
         root_volume_size_gib=20,
         root_volume_type=None,
+        boot_concurrency=1,
         duration_seconds=90,
         subbenchmark_failure_mode="fail",
         artifact_container="rally-ci-churn",
@@ -710,6 +755,7 @@ class MixedPressureScenario(_MixedPressureBase):
         command_timeout_seconds = int(command_timeout_seconds)
         root_volume_size_gib = int(root_volume_size_gib)
         fio_port = int(fio_port)
+        boot_concurrency = int(boot_concurrency)
         tenant_cidr = self._tenant_cidr()
         if duration_seconds <= 0:
             raise rally_exceptions.ScriptError(message="duration_seconds must be > 0")
@@ -776,8 +822,8 @@ class MixedPressureScenario(_MixedPressureBase):
                 root_volume_size_gib=root_volume_size_gib,
                 root_volume_type=root_volume_type,
             )
-            for _ in range(int(many_client_count)):
-                client = self._boot_benchmark_vm(
+            def _boot_many_client_record(_index: int) -> dict[str, object]:
+                client = self._boot_benchmark_vm_raw(
                     net_image,
                     fixed_group_flavor,
                     keypair["name"],
@@ -786,9 +832,18 @@ class MixedPressureScenario(_MixedPressureBase):
                     root_volume_size_gib=root_volume_size_gib,
                     root_volume_type=root_volume_type,
                 )
-                many_clients.append({"server": client, "fixed_ip": self._fixed_ip(client), "name": client.name})
-            for _ in range(int(ring_participant_count)):
-                participant = self._boot_benchmark_vm(
+                return {"server": client, "fixed_ip": self._fixed_ip(client), "name": client.name}
+
+            self._boot_vm_group(
+                count=int(many_client_count),
+                concurrency=boot_concurrency,
+                atomic_action_name="many.client.boot_group",
+                boot_fn=_boot_many_client_record,
+                destination=many_clients,
+            )
+
+            def _boot_ring_participant_record(_index: int) -> dict[str, object]:
+                participant = self._boot_benchmark_vm_raw(
                     net_image,
                     fixed_group_flavor,
                     keypair["name"],
@@ -797,11 +852,24 @@ class MixedPressureScenario(_MixedPressureBase):
                     root_volume_size_gib=root_volume_size_gib,
                     root_volume_type=root_volume_type,
                 )
-                ring_participants.append({"server": participant, "fixed_ip": self._fixed_ip(participant), "name": participant.name})
+                return {
+                    "server": participant,
+                    "fixed_ip": self._fixed_ip(participant),
+                    "name": participant.name,
+                }
+
+            self._boot_vm_group(
+                count=int(ring_participant_count),
+                concurrency=boot_concurrency,
+                atomic_action_name="ring.participant.boot_group",
+                boot_fn=_boot_ring_participant_record,
+                destination=ring_participants,
+            )
+
             max_fio_clients = max(fio_client_counts)
             max_fio_volumes = max(fio_volumes_per_client)
-            for _ in range(max_fio_clients):
-                worker = self._boot_fio_worker(
+            def _boot_fio_worker_record(_index: int) -> dict[str, object]:
+                worker = self._boot_fio_worker_raw(
                     fio_worker_image,
                     fixed_group_flavor,
                     keypair["name"],
@@ -812,7 +880,15 @@ class MixedPressureScenario(_MixedPressureBase):
                     root_volume_size_gib=root_volume_size_gib,
                     root_volume_type=root_volume_type,
                 )
-                fio_workers.append({"server": worker, "fixed_ip": self._fixed_ip(worker), "name": worker.name})
+                return {"server": worker, "fixed_ip": self._fixed_ip(worker), "name": worker.name}
+
+            self._boot_vm_group(
+                count=max_fio_clients,
+                concurrency=boot_concurrency,
+                atomic_action_name="fio.worker.boot_group",
+                boot_fn=_boot_fio_worker_record,
+                destination=fio_workers,
+            )
             device_letters = "bcdefghijklmnopqrstuvwxyz"
             for worker in fio_workers:
                 for volume_index in range(max_fio_volumes):

@@ -210,6 +210,30 @@ runcmd:
         root_volume_size_gib: int = 20,
         root_volume_type: str | None = None,
     ):
+        return self._boot_worker_raw(
+            worker_image,
+            worker_flavor,
+            key_name,
+            security_group_name,
+            expected_volumes,
+            fio_port,
+            boot_from_volume=boot_from_volume,
+            root_volume_size_gib=root_volume_size_gib,
+            root_volume_type=root_volume_type,
+        )
+
+    def _boot_worker_raw(
+        self,
+        worker_image,
+        worker_flavor,
+        key_name: str,
+        security_group_name: str,
+        expected_volumes: int,
+        fio_port: int,
+        boot_from_volume: bool = False,
+        root_volume_size_gib: int = 20,
+        root_volume_type: str | None = None,
+    ):
         boot_image, boot_kwargs = build_root_volume_boot(
             worker_image,
             enabled=boot_from_volume,
@@ -542,6 +566,7 @@ class FioDistributedScenario(_FioDistributedBase):
         boot_from_volume=False,
         root_volume_size_gib=20,
         root_volume_type=None,
+        boot_concurrency=1,
         volume_size_gib=10,
         volume_type=None,
         client_counts=None,
@@ -571,6 +596,7 @@ class FioDistributedScenario(_FioDistributedBase):
         ssh_connect_timeout_seconds = int(ssh_connect_timeout_seconds)
         command_timeout_seconds = int(command_timeout_seconds)
         root_volume_size_gib = int(root_volume_size_gib)
+        boot_concurrency = int(boot_concurrency)
         max_clients = max(client_counts)
         max_volumes_per_client = max(volumes_per_client)
         tenant_cidr = self._tenant_cidr()
@@ -599,8 +625,8 @@ class FioDistributedScenario(_FioDistributedBase):
                 root_volume_size_gib=root_volume_size_gib,
                 root_volume_type=root_volume_type,
             )
-            for _ in range(max_clients):
-                worker = self._boot_worker(
+            def _boot_worker_record(_index: int) -> dict[str, object]:
+                worker = self._boot_worker_raw(
                     worker_image,
                     worker_flavor,
                     keypair["name"],
@@ -611,7 +637,15 @@ class FioDistributedScenario(_FioDistributedBase):
                     root_volume_size_gib=root_volume_size_gib,
                     root_volume_type=root_volume_type,
                 )
-                workers.append({"server": worker, "fixed_ip": self._fixed_ip(worker)})
+                return {"server": worker, "fixed_ip": self._fixed_ip(worker)}
+
+            self._boot_vm_group(
+                count=max_clients,
+                concurrency=boot_concurrency,
+                atomic_action_name="worker.boot_group",
+                boot_fn=_boot_worker_record,
+                destination=workers,
+            )
 
             device_letters = "bcdefghijklmnopqrstuvwxyz"
             for worker in workers:

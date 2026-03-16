@@ -21,6 +21,7 @@ from rally_openstack.common import consts
 from rally_openstack.task import scenario
 from rally_openstack.task.scenarios.vm import utils as vm_utils
 
+from rally_ci_churn.plugins.controller_runtime import ParallelBootMixin
 from rally_ci_churn.plugins.controller_runtime import build_root_volume_boot
 from rally_ci_churn.results import build_artifacts_output
 from rally_ci_churn.results import build_metrics_output
@@ -46,7 +47,7 @@ def _as_str_list(values: list[object]) -> list[str]:
     return [str(value) for value in values]
 
 
-class _NetTrafficBase(vm_utils.VMScenario):
+class _NetTrafficBase(ParallelBootMixin, vm_utils.VMScenario):
     def _task_uuid(self) -> str:
         owner_id = self.context.get("owner_id")
         if owner_id:
@@ -194,6 +195,26 @@ runcmd:
 
     @atomic.action_timer("benchmark.boot")
     def _boot_benchmark_vm(
+        self,
+        image,
+        flavor,
+        key_name: str,
+        security_group_name: str,
+        boot_from_volume: bool = False,
+        root_volume_size_gib: int = 20,
+        root_volume_type: str | None = None,
+    ):
+        return self._boot_benchmark_vm_raw(
+            image,
+            flavor,
+            key_name,
+            security_group_name,
+            boot_from_volume=boot_from_volume,
+            root_volume_size_gib=root_volume_size_gib,
+            root_volume_type=root_volume_type,
+        )
+
+    def _boot_benchmark_vm_raw(
         self,
         image,
         flavor,
@@ -424,6 +445,7 @@ class NetManyToOneScenario(_NetTrafficBase):
         boot_from_volume=False,
         root_volume_size_gib=20,
         root_volume_type=None,
+        boot_concurrency=1,
         client_count=8,
         mode="iperf3",
         protocols=None,
@@ -449,6 +471,7 @@ class NetManyToOneScenario(_NetTrafficBase):
         ramp_time_seconds = int(ramp_time_seconds)
         base_port = int(base_port)
         root_volume_size_gib = int(root_volume_size_gib)
+        boot_concurrency = int(boot_concurrency)
         tenant_cidr = self._tenant_cidr()
 
         keypair = self._create_keypair()
@@ -484,8 +507,8 @@ class NetManyToOneScenario(_NetTrafficBase):
                 root_volume_size_gib=root_volume_size_gib,
                 root_volume_type=root_volume_type,
             )
-            for _ in range(client_count):
-                client = self._boot_benchmark_vm(
+            def _boot_client_record(_index: int) -> dict[str, object]:
+                client = self._boot_benchmark_vm_raw(
                     client_image,
                     client_flavor,
                     keypair["name"],
@@ -494,7 +517,15 @@ class NetManyToOneScenario(_NetTrafficBase):
                     root_volume_size_gib=root_volume_size_gib,
                     root_volume_type=root_volume_type,
                 )
-                clients.append({"name": client.name, "fixed_ip": self._fixed_ip(client), "server": client})
+                return {"name": client.name, "fixed_ip": self._fixed_ip(client), "server": client}
+
+            self._boot_vm_group(
+                count=client_count,
+                concurrency=boot_concurrency,
+                atomic_action_name="client.boot_group",
+                boot_fn=_boot_client_record,
+                destination=clients,
+            )
 
             if mode == "http_volume":
                 volume = self._create_volume(int(server_volume_size_gib), server_volume_type)
@@ -724,6 +755,7 @@ class NetRingScenario(_NetTrafficBase):
         boot_from_volume=False,
         root_volume_size_gib=20,
         root_volume_type=None,
+        boot_concurrency=1,
         participant_count=8,
         protocols=None,
         duration_seconds=20,
@@ -746,6 +778,7 @@ class NetRingScenario(_NetTrafficBase):
         base_port = int(base_port)
         neighbors_per_vm = int(neighbors_per_vm)
         root_volume_size_gib = int(root_volume_size_gib)
+        boot_concurrency = int(boot_concurrency)
         tenant_cidr = self._tenant_cidr()
 
         keypair = self._create_keypair()
@@ -770,8 +803,8 @@ class NetRingScenario(_NetTrafficBase):
                 root_volume_size_gib=root_volume_size_gib,
                 root_volume_type=root_volume_type,
             )
-            for _ in range(participant_count):
-                participant = self._boot_benchmark_vm(
+            def _boot_participant_record(_index: int) -> dict[str, object]:
+                participant = self._boot_benchmark_vm_raw(
                     participant_image,
                     participant_flavor,
                     keypair["name"],
@@ -780,7 +813,19 @@ class NetRingScenario(_NetTrafficBase):
                     root_volume_size_gib=root_volume_size_gib,
                     root_volume_type=root_volume_type,
                 )
-                participants.append({"name": participant.name, "fixed_ip": self._fixed_ip(participant), "server": participant})
+                return {
+                    "name": participant.name,
+                    "fixed_ip": self._fixed_ip(participant),
+                    "server": participant,
+                }
+
+            self._boot_vm_group(
+                count=participant_count,
+                concurrency=boot_concurrency,
+                atomic_action_name="participant.boot_group",
+                boot_fn=_boot_participant_record,
+                destination=participants,
+            )
 
             ssh = self._ssh(controller_fip["ip"], ssh_user, keypair["private"], ssh_connect_timeout_seconds)
             matrix_cases = []

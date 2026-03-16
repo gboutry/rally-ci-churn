@@ -303,6 +303,7 @@ class TestScenarioStructure:
         assert "fio" in args
         assert "cinder" in args
         assert "artifacts" in args
+        assert args["controller"]["boot_concurrency"] == 4
 
     @patch.object(sunbeam, "_run_openstack", side_effect=_fake_run_openstack)
     def test_net_many_to_one_has_traffic(self, _mock, fake_clouds: Path) -> None:
@@ -311,6 +312,7 @@ class TestScenarioStructure:
         assert "many_to_one" in args
         assert "controller" in args
         assert args["traffic"]["mode"] == "iperf3"
+        assert args["controller"]["boot_concurrency"] == 4
 
     @patch.object(sunbeam, "_run_openstack", side_effect=_fake_run_openstack)
     def test_net_ring_has_ring(self, _mock, fake_clouds: Path) -> None:
@@ -318,6 +320,7 @@ class TestScenarioStructure:
         assert "ring" in args
         assert "traffic" in args
         assert args["ring"]["bidirectional"] is True
+        assert args["controller"]["boot_concurrency"] == 4
 
     @patch.object(sunbeam, "_run_openstack", side_effect=_fake_run_openstack)
     def test_mixed_has_all_sub_benchmarks(self, _mock, fake_clouds: Path) -> None:
@@ -327,6 +330,7 @@ class TestScenarioStructure:
         assert "fio" in args
         assert "many_to_one" in args
         assert "ring" in args
+        assert args["controller"]["boot_concurrency"] == 4
 
 
 # ---------------------------------------------------------------------------

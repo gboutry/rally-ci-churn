@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 import shutil
 import stat
 import time
 import uuid
 from pathlib import Path
+from typing import TypeVar
+from typing import cast
 
 from rally import exceptions as rally_exceptions
 from rally.task import atomic
@@ -21,6 +26,8 @@ SSH_PORT = 22
 ATTACH_RETRY_COUNT = 5
 ATTACH_RETRY_DELAY_SECONDS = 5.0
 VOLUME_POLL_INTERVAL_SECONDS = 2.0
+
+T = TypeVar("T")
 
 
 def build_root_volume_boot(
@@ -45,7 +52,79 @@ def build_root_volume_boot(
     return "", {"block_device_mapping_v2": [block_device]}
 
 
-class ControllerRuntimeBase(vm_utils.VMScenario):
+class ParallelBootMixin:
+    def _resolve_boot_concurrency(
+        self,
+        count: int,
+        concurrency: int | None,
+        argument_name: str = "boot_concurrency",
+    ) -> int:
+        if count < 0:
+            raise rally_exceptions.InvalidArgumentsException(
+                argument_name="count",
+                value=count,
+                valid_values="integer >= 0",
+            )
+        if count == 0:
+            return 0
+        if concurrency is None:
+            return 1
+        resolved = int(concurrency)
+        if resolved < 1:
+            raise rally_exceptions.InvalidArgumentsException(
+                argument_name=argument_name,
+                value=resolved,
+                valid_values="integer >= 1",
+            )
+        return min(count, resolved)
+
+    def _boot_vm_group(
+        self,
+        *,
+        count: int,
+        concurrency: int | None,
+        atomic_action_name: str,
+        boot_fn: Callable[[int], T],
+        destination: list[T],
+        argument_name: str = "boot_concurrency",
+    ) -> None:
+        resolved = self._resolve_boot_concurrency(
+            count,
+            concurrency,
+            argument_name=argument_name,
+        )
+        if resolved == 0:
+            return
+
+        ordered_results: dict[int, T] = {}
+        first_error: Exception | None = None
+
+        with atomic.ActionTimer(cast(atomic.ActionTimerMixin, self), atomic_action_name):
+            if resolved == 1:
+                for index in range(count):
+                    ordered_results[index] = boot_fn(index)
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=resolved,
+                    thread_name_prefix="rally-vm-boot",
+                ) as executor:
+                    future_to_index = {
+                        executor.submit(boot_fn, index): index for index in range(count)
+                    }
+                    for future in as_completed(future_to_index):
+                        index = future_to_index[future]
+                        try:
+                            ordered_results[index] = future.result()
+                        except Exception as exc:
+                            if first_error is None:
+                                first_error = exc
+
+        destination.extend(ordered_results[index] for index in sorted(ordered_results))
+        if first_error is not None:
+            raise first_error
+
+
+class ControllerRuntimeBase(ParallelBootMixin, vm_utils.VMScenario):
     """Common OpenStack orchestration helpers for controller-driven scenarios."""
 
     def _task_uuid(self) -> str:

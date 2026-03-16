@@ -52,6 +52,7 @@ Guidance:
 
 Key knobs:
 
+- `boot_concurrency`
 - `client_counts`
 - `volumes_per_client`
 - `volume_size_gib`
@@ -62,6 +63,7 @@ Key knobs:
 
 Guidance:
 
+- raise `boot_concurrency` to parallelize worker VM creation inside one Rally iteration
 - scale `client_counts` first to increase distributed pressure
 - scale `volumes_per_client` when you want more block-device fan-out per worker
 - keep `volume_size_gib` large enough for the fio access pattern
@@ -71,6 +73,7 @@ Guidance:
 
 Key knobs:
 
+- `boot_concurrency`
 - `duration_seconds`
 - churn:
   `max_active_vms`, `baseline_launches_per_minute`, `burst_windows`
@@ -84,6 +87,7 @@ Key knobs:
 Guidance:
 
 - keep the BM0 smoke preset small; the whole point is overlap, not per-axis peak
+- raise `boot_concurrency` when fixed fio or network groups are slow to provision
 - grow fixed groups before making the churn schedule aggressive
 - use `vm_workers` and `vm_bytes` together when you want churn VMs to apply CPU
   and memory pressure at the same time
@@ -115,6 +119,7 @@ Guidance:
 
 Key knobs:
 
+- `boot_concurrency`
 - `client_count`
 - `participant_count`
 - `neighbors_per_vm`
@@ -125,6 +130,7 @@ Key knobs:
 
 Guidance:
 
+- raise `boot_concurrency` to parallelize client or participant VM creation inside one Rally iteration
 - scale `client_count` first for the one-server-many-clients shape
 - scale `participant_count` first for the east-west ring shape
 - keep `neighbors_per_vm=1` until you know the cloud can sustain the baseline

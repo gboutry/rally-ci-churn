@@ -18,6 +18,7 @@ controller:
   ssh_user: "ubuntu"
   ssh_connect_timeout_seconds: 300
   command_timeout_seconds: 0
+  boot_concurrency: 4
 traffic:
   protocols: ["tcp", "udp"]
   duration_seconds: 20

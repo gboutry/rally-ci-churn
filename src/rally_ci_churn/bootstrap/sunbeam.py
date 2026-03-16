@@ -347,6 +347,7 @@ def _build_fio_distributed_preset(
         "ssh_user": "ubuntu",
         "ssh_connect_timeout_seconds": 300,
         "command_timeout_seconds": 1800,
+        "boot_concurrency": 4,
     }
     rendered["cinder"] = {
         "volume_size_gib": 10,
@@ -394,6 +395,7 @@ def _build_net_many_to_one_preset(
         "ssh_user": "ubuntu",
         "ssh_connect_timeout_seconds": 300,
         "command_timeout_seconds": 1800,
+        "boot_concurrency": 4,
     }
     rendered["traffic"] = {
         "mode": "iperf3",
@@ -454,6 +456,7 @@ def _build_net_ring_preset(
         "ssh_user": "ubuntu",
         "ssh_connect_timeout_seconds": 300,
         "command_timeout_seconds": 1800,
+        "boot_concurrency": 4,
     }
     rendered["traffic"] = {
         "protocols": ["tcp", "udp"],
@@ -504,6 +507,7 @@ def _build_mixed_pressure_preset(
         "ssh_user": "ubuntu",
         "ssh_connect_timeout_seconds": 300,
         "command_timeout_seconds": 1800,
+        "boot_concurrency": 4,
     }
     rendered["mixed"] = {
         "duration_seconds": 25,
