@@ -348,6 +348,7 @@ def _build_fio_distributed_preset(
         "ssh_connect_timeout_seconds": 300,
         "command_timeout_seconds": 1800,
         "boot_concurrency": 4,
+        "volume_concurrency": 4,
     }
     rendered["cinder"] = {
         "volume_size_gib": 10,
@@ -508,6 +509,7 @@ def _build_mixed_pressure_preset(
         "ssh_connect_timeout_seconds": 300,
         "command_timeout_seconds": 1800,
         "boot_concurrency": 4,
+        "volume_concurrency": 4,
     }
     rendered["mixed"] = {
         "duration_seconds": 25,

@@ -671,6 +671,7 @@ class MixedPressureScenario(_MixedPressureBase):
         root_volume_size_gib=20,
         root_volume_type=None,
         boot_concurrency=1,
+        volume_concurrency=1,
         duration_seconds=90,
         subbenchmark_failure_mode="fail",
         artifact_container="rally-ci-churn",
@@ -756,6 +757,7 @@ class MixedPressureScenario(_MixedPressureBase):
         root_volume_size_gib = int(root_volume_size_gib)
         fio_port = int(fio_port)
         boot_concurrency = int(boot_concurrency)
+        volume_concurrency = int(volume_concurrency)
         tenant_cidr = self._tenant_cidr()
         if duration_seconds <= 0:
             raise rally_exceptions.ScriptError(message="duration_seconds must be > 0")
@@ -890,13 +892,22 @@ class MixedPressureScenario(_MixedPressureBase):
                 destination=fio_workers,
             )
             device_letters = "bcdefghijklmnopqrstuvwxyz"
-            for worker in fio_workers:
-                for volume_index in range(max_fio_volumes):
-                    volume = self._create_volume(int(fio_volume_size_gib), fio_volume_type)
-                    fio_volumes.append(volume.id)
-                    device_name = f"/dev/vd{device_letters[volume_index]}"
-                    self._attach_volume(worker["server"], volume.id, device_name)
-                    fio_attachments.append({"server_id": worker["server"].id, "volume_id": volume.id})
+            fio_volume_requests = [
+                {
+                    "server": worker["server"],
+                    "size": int(fio_volume_size_gib),
+                    "volume_type": fio_volume_type,
+                    "device_name": f"/dev/vd{device_letters[volume_index]}",
+                }
+                for worker in fio_workers
+                for volume_index in range(max_fio_volumes)
+            ]
+            self._provision_volume_group(
+                requests=fio_volume_requests,
+                concurrency=volume_concurrency,
+                volume_ids=fio_volumes,
+                attachments=fio_attachments,
+            )
 
             ssh = self._ssh(controller_fip["ip"], ssh_user, keypair["private"], ssh_connect_timeout_seconds)
             for worker in fio_workers:

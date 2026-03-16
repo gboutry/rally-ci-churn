@@ -123,6 +123,103 @@ class ParallelBootMixin:
         if first_error is not None:
             raise first_error
 
+    def _provision_volume_group(
+        self,
+        *,
+        requests: list[dict[str, object]],
+        concurrency: int | None,
+        volume_ids: list[str],
+        attachments: list[dict[str, object]],
+        argument_name: str = "volume_concurrency",
+    ) -> None:
+        resolved = self._resolve_boot_concurrency(
+            len(requests),
+            concurrency,
+            argument_name=argument_name,
+        )
+        if resolved == 0:
+            return
+
+        created_by_index: dict[int, object] = {}
+        create_error: Exception | None = None
+        create_volume_raw = cast(Callable[[int, str | None], object], getattr(self, "_create_volume_raw"))
+        attach_volume_raw = cast(Callable[[object, str, str], object], getattr(self, "_attach_volume_raw"))
+
+        def _create(index: int) -> object:
+            request = requests[index]
+            return create_volume_raw(
+                int(cast(int | str, request["size"])),
+                cast(str | None, request.get("volume_type")),
+            )
+
+        with atomic.ActionTimer(cast(atomic.ActionTimerMixin, self), "volume.create_group"):
+            if resolved == 1:
+                for index in range(len(requests)):
+                    created_by_index[index] = _create(index)
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=resolved,
+                    thread_name_prefix="rally-volume-create",
+                ) as executor:
+                    future_to_index = {
+                        executor.submit(_create, index): index for index in range(len(requests))
+                    }
+                    for future in as_completed(future_to_index):
+                        index = future_to_index[future]
+                        try:
+                            created_by_index[index] = future.result()
+                        except Exception as exc:
+                            if create_error is None:
+                                create_error = exc
+
+        created_volumes = [created_by_index[index] for index in sorted(created_by_index)]
+        volume_ids.extend(str(getattr(volume, "id")) for volume in created_volumes)
+        if create_error is not None:
+            raise create_error
+
+        attached_by_index: dict[int, dict[str, object]] = {}
+        attach_error: Exception | None = None
+
+        def _attach(index: int) -> dict[str, object]:
+            request = requests[index]
+            volume = created_by_index[index]
+            server = request["server"]
+            volume_id = str(getattr(volume, "id"))
+            server_id = str(getattr(server, "id"))
+            attach_volume_raw(
+                server,
+                volume_id,
+                str(request["device_name"]),
+            )
+            return {
+                "server_id": server_id,
+                "volume_id": volume_id,
+            }
+
+        with atomic.ActionTimer(cast(atomic.ActionTimerMixin, self), "volume.attach_group"):
+            if resolved == 1:
+                for index in sorted(created_by_index):
+                    attached_by_index[index] = _attach(index)
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=resolved,
+                    thread_name_prefix="rally-volume-attach",
+                ) as executor:
+                    future_to_index = {
+                        executor.submit(_attach, index): index for index in sorted(created_by_index)
+                    }
+                    for future in as_completed(future_to_index):
+                        index = future_to_index[future]
+                        try:
+                            attached_by_index[index] = future.result()
+                        except Exception as exc:
+                            if attach_error is None:
+                                attach_error = exc
+
+        attachments.extend(attached_by_index[index] for index in sorted(attached_by_index))
+        if attach_error is not None:
+            raise attach_error
+
 
 class ControllerRuntimeBase(ParallelBootMixin, vm_utils.VMScenario):
     """Common OpenStack orchestration helpers for controller-driven scenarios."""
@@ -236,6 +333,9 @@ class ControllerRuntimeBase(ParallelBootMixin, vm_utils.VMScenario):
 
     @atomic.action_timer("volume.create")
     def _create_volume(self, size: int, volume_type: str | None):
+        return self._create_volume_raw(size, volume_type)
+
+    def _create_volume_raw(self, size: int, volume_type: str | None):
         kwargs: dict[str, object] = {"size": size, "name": self.generate_random_name()}
         if volume_type:
             kwargs["volume_type"] = volume_type
@@ -244,6 +344,9 @@ class ControllerRuntimeBase(ParallelBootMixin, vm_utils.VMScenario):
 
     @atomic.action_timer("volume.attach")
     def _attach_volume(self, server, volume_id: str, device_name: str):
+        return self._attach_volume_raw(server, volume_id, device_name)
+
+    def _attach_volume_raw(self, server, volume_id: str, device_name: str):
         last_error = None
         for attempt in range(1, ATTACH_RETRY_COUNT + 1):
             try:

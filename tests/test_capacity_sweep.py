@@ -304,6 +304,7 @@ class TestScenarioStructure:
         assert "cinder" in args
         assert "artifacts" in args
         assert args["controller"]["boot_concurrency"] == 4
+        assert args["controller"]["volume_concurrency"] == 4
 
     @patch.object(sunbeam, "_run_openstack", side_effect=_fake_run_openstack)
     def test_net_many_to_one_has_traffic(self, _mock, fake_clouds: Path) -> None:
@@ -331,6 +332,7 @@ class TestScenarioStructure:
         assert "many_to_one" in args
         assert "ring" in args
         assert args["controller"]["boot_concurrency"] == 4
+        assert args["controller"]["volume_concurrency"] == 4
 
 
 # ---------------------------------------------------------------------------

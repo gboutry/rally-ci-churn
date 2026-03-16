@@ -23,10 +23,12 @@ Task templates map directly to the custom Rally scenarios.
 - `fio_distributed.yaml.j2`
   - controller/worker fio benchmarking
   - `controller.boot_concurrency` controls in-scenario worker boot fan-out
+  - `controller.volume_concurrency` controls in-scenario fio volume create/attach fan-out
   - typically used with `fio-distributed`
 - `mixed_pressure.yaml.j2`
   - one controller running overlapping fio, network, and spiky stress-ng pressure
   - `controller.boot_concurrency` controls in-scenario fixed-group boot fan-out
+  - `controller.volume_concurrency` controls in-scenario fio volume create/attach fan-out
   - typically used with `mixed-pressure`
 - `net_many_to_one.yaml.j2`
   - one server, many clients, and one controller

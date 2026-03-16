@@ -19,6 +19,7 @@ controller:
   ssh_connect_timeout_seconds: 300
   command_timeout_seconds: 0
   boot_concurrency: 4
+  volume_concurrency: 4
 cinder:
   volume_size_gib: 10
   volume_type: null

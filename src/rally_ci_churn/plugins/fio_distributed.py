@@ -567,6 +567,7 @@ class FioDistributedScenario(_FioDistributedBase):
         root_volume_size_gib=20,
         root_volume_type=None,
         boot_concurrency=1,
+        volume_concurrency=1,
         volume_size_gib=10,
         volume_type=None,
         client_counts=None,
@@ -597,6 +598,7 @@ class FioDistributedScenario(_FioDistributedBase):
         command_timeout_seconds = int(command_timeout_seconds)
         root_volume_size_gib = int(root_volume_size_gib)
         boot_concurrency = int(boot_concurrency)
+        volume_concurrency = int(volume_concurrency)
         max_clients = max(client_counts)
         max_volumes_per_client = max(volumes_per_client)
         tenant_cidr = self._tenant_cidr()
@@ -648,13 +650,22 @@ class FioDistributedScenario(_FioDistributedBase):
             )
 
             device_letters = "bcdefghijklmnopqrstuvwxyz"
-            for worker in workers:
-                for volume_index in range(max_volumes_per_client):
-                    volume = self._create_volume(volume_size_gib, volume_type)
-                    volumes.append(volume.id)
-                    device_name = f"/dev/vd{device_letters[volume_index]}"
-                    self._attach_volume(worker["server"], volume.id, device_name)
-                    attachments.append({"server_id": worker["server"].id, "volume_id": volume.id})
+            volume_requests = [
+                {
+                    "server": worker["server"],
+                    "size": volume_size_gib,
+                    "volume_type": volume_type,
+                    "device_name": f"/dev/vd{device_letters[volume_index]}",
+                }
+                for worker in workers
+                for volume_index in range(max_volumes_per_client)
+            ]
+            self._provision_volume_group(
+                requests=volume_requests,
+                concurrency=volume_concurrency,
+                volume_ids=volumes,
+                attachments=attachments,
+            )
 
             ssh = self._ssh(
                 controller_fip["ip"],

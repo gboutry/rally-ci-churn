@@ -22,6 +22,7 @@ controller:
   ssh_connect_timeout_seconds: 300
   command_timeout_seconds: 0
   boot_concurrency: 4
+  volume_concurrency: 4
 storage:
   artifact_container: "rally-ci-churn"
   artifact_ttl_seconds: 0
