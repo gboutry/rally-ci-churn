@@ -32,7 +32,6 @@ from rally_ci_churn.results import build_table_output
 from rally_ci_churn.results import summarize_numeric_series
 
 
-DEVICE_DISCOVERY_TIMEOUT_SECONDS = 600
 DEVICE_POLL_INTERVAL_SECONDS = 2.0
 WORKER_READY_TIMEOUT_SECONDS = 600
 
@@ -74,7 +73,6 @@ set -euo pipefail
 expected_volumes="{expected_volumes}"
 fio_port="{fio_port}"
 mkdir -p /var/lib/rally-fio/devices
-start_ts=$(date +%s)
 while true; do
   root_source=$(findmnt -n -o SOURCE / || true)
   root_pkname=$(lsblk -no PKNAME "$root_source" 2>/dev/null || true)
@@ -92,10 +90,6 @@ while true; do
   done
   if [ "${{#data_disks[@]}}" -ge "$expected_volumes" ]; then
     break
-  fi
-  if [ $(( $(date +%s) - start_ts )) -ge {DEVICE_DISCOVERY_TIMEOUT_SECONDS} ]; then
-    echo "Timed out waiting for attached data volumes" >&2
-    exit 1
   fi
   sleep {DEVICE_POLL_INTERVAL_SECONDS}
 done
