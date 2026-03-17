@@ -351,6 +351,32 @@ class TestPlanSizing:
         assert sizing["planned_max_active_vms"] >= 1
         assert sizing["capacity"]["vm_capacity"] >= 1
         assert args["schedule"]["max_active_vms"] == sizing["planned_max_active_vms"]
+        # Flavor-derived stress-ng workers (fake flavor: 4 vCPU, 8 GiB RAM)
+        assert sizing["flavor_vcpus"] == 4
+        assert sizing["flavor_ram_gib"] == 8
+        assert args["workload"]["params"]["cpu_workers"] == 4
+        assert args["workload"]["params"]["vm_workers"] == 1
+        assert args["workload"]["params"]["vm_bytes"] == "2G"
+
+    @patch.object(sunbeam, "_run_openstack", side_effect=_fake_run_openstack)
+    def test_plan_spiky_workload_mix(self, _mock, fake_clouds: Path) -> None:
+        """_plan_spiky must generate a workload_mix with 3 staggered cohorts."""
+        args = _build_args_for_scenario(fake_clouds, "spiky")
+        cluster = capacity_sweep.DEFAULT_CLUSTER
+        limits = capacity_sweep.DEFAULT_LIMITS
+        capacity_sweep._plan_spiky(args, cluster, fake_clouds, 10, limits)
+        mix = args["workload"]["mix"]
+        assert len(mix) == 3
+        # Weights: 3 + 3 + 4 = 10
+        assert sum(e["weight"] for e in mix) == 10
+        # All use stress_ng profile
+        assert all(e["profile"] == "stress_ng" for e in mix)
+        # Durations are strictly increasing (short < medium < long)
+        durations = [e["params"]["duration_seconds"] for e in mix]
+        assert durations[0] < durations[1] < durations[2]
+        # All cohorts use full flavor CPU workers
+        for entry in mix:
+            assert entry["params"]["cpu_workers"] == 4
 
     @patch.object(sunbeam, "_run_openstack", side_effect=_fake_run_openstack)
     def test_plan_fio_sizing(self, _mock, fake_clouds: Path) -> None:
@@ -382,6 +408,73 @@ class TestPlanSizing:
         sizing = capacity_sweep._plan_ring(args, cluster, fake_clouds, 25, limits, calibration)
         assert sizing["planned_participants"] >= 2
         assert args["ring"]["participant_count"] == sizing["planned_participants"]
+
+
+class TestStressNgParamsFromFlavor:
+    """Verify _stress_ng_params_from_flavor derives correct values."""
+
+    def test_small_flavor(self) -> None:
+        flavor = {"vcpus": 2, "ram": 4096}
+        params = capacity_sweep._stress_ng_params_from_flavor(flavor, 300)
+        assert params["cpu_workers"] == 2
+        assert params["vm_workers"] == 1  # max(1, 2//4)
+        assert params["vm_bytes"] == "1G"  # min(4//4=1, 16) = 1
+        assert params["duration_seconds"] == 300
+
+    def test_large_flavor(self) -> None:
+        flavor = {"vcpus": 16, "ram": 65536}  # 64 GiB
+        params = capacity_sweep._stress_ng_params_from_flavor(flavor, 600)
+        assert params["cpu_workers"] == 16
+        assert params["vm_workers"] == 4  # 16//4
+        assert params["vm_bytes"] == "16G"  # min(64//4=16, 16) = 16
+        assert params["duration_seconds"] == 600
+
+    def test_huge_ram_caps_at_16g(self) -> None:
+        flavor = {"vcpus": 32, "ram": 524288}  # 512 GiB
+        params = capacity_sweep._stress_ng_params_from_flavor(flavor, 120)
+        assert params["vm_bytes"] == "16G"  # min(512//4=128, 16) = 16
+
+
+class TestMixedPlanChurnScaling:
+    """The mixed-pressure churn section must use flavor-derived stress-ng params."""
+
+    @patch.object(sunbeam, "_run_openstack", side_effect=_fake_run_openstack)
+    def test_plan_mixed_churn_workers(self, _mock, fake_clouds: Path) -> None:
+        """_plan_mixed must pick up flavor info from the spiky sizing dict."""
+        spiky_args = _build_args_for_scenario(fake_clouds, "spiky")
+        fio_args = _build_args_for_scenario(fake_clouds, "fio-distributed")
+        many_args = _build_args_for_scenario(fake_clouds, "net-many-to-one")
+        ring_args = _build_args_for_scenario(fake_clouds, "net-ring")
+        mixed_args = _build_args_for_scenario(fake_clouds, "mixed-pressure")
+
+        cluster = capacity_sweep.DEFAULT_CLUSTER
+        limits = capacity_sweep.DEFAULT_LIMITS
+
+        # Run all prerequisite plans
+        spiky_sizing = capacity_sweep._plan_spiky(spiky_args, cluster, fake_clouds, 25, limits)
+        fio_sizing = capacity_sweep._plan_fio(
+            fio_args, cluster, fake_clouds, 25, limits, {"fio_worker_gbps": 2.0},
+        )
+        many_sizing = capacity_sweep._plan_many_to_one(
+            many_args, cluster, fake_clouds, 25, limits, {"many_to_one_client_gbps": 10.0},
+        )
+        ring_sizing = capacity_sweep._plan_ring(
+            ring_args, cluster, fake_clouds, 25, limits, {"ring_participant_gbps": 20.0},
+        )
+
+        derived = {
+            "spiky": spiky_sizing,
+            "fio-distributed": fio_sizing,
+            "net-many-to-one": many_sizing,
+            "net-ring": ring_sizing,
+        }
+        capacity_sweep._plan_mixed(mixed_args, derived, limits)
+
+        # Churn workers must match flavor (4 vCPU, 8 GiB)
+        churn_params = mixed_args["churn"]["workload_params"]
+        assert churn_params["cpu_workers"] == 4
+        assert churn_params["vm_workers"] == 1
+        assert churn_params["vm_bytes"] == "2G"
 
 
 # ---------------------------------------------------------------------------

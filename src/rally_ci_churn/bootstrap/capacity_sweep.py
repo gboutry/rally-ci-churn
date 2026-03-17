@@ -263,6 +263,8 @@ def _build_base_args(
             args["cloud"]["flavor_name"] = flavor_override
         else:
             args["cloud"]["flavor_name"] = _pick_stress_ng_flavor(clouds_yaml)
+        # Placeholder workload params; _plan_spiky() overrides these with
+        # flavor-derived values and adds a workload_mix for staggered durations.
         args["workload"] = {
             "profile": "stress_ng",
             "params": {
@@ -298,6 +300,20 @@ def _limit(value: int, max_value: int) -> int:
     return max(1, value)
 
 
+def _stress_ng_params_from_flavor(flavor: dict[str, Any], duration_seconds: int) -> dict[str, Any]:
+    """Derive stress-ng worker counts from the flavor's vCPUs and RAM."""
+    vcpus = max(1, int(flavor["vcpus"]))
+    ram_gib = max(1, int(flavor["ram"]) // 1024)
+    vm_workers = max(1, vcpus // 4)
+    vm_bytes_gib = min(ram_gib // 4, 16)
+    return {
+        "duration_seconds": duration_seconds,
+        "cpu_workers": vcpus,
+        "vm_workers": vm_workers,
+        "vm_bytes": f"{max(1, vm_bytes_gib)}G",
+    }
+
+
 def _plan_spiky(
     args_data: dict[str, Any],
     cluster: dict[str, Any],
@@ -321,12 +337,27 @@ def _plan_spiky(
             "launch_rate_multiplier": 2.0,
         }
     ]
-    args_data["workload"]["params"]["duration_seconds"] = max(300, duration_seconds - 120)
+    workload_duration = max(300, duration_seconds - 120)
+    stress_params = _stress_ng_params_from_flavor(flavor, workload_duration)
+    args_data["workload"]["params"] = stress_params
+
+    # Staggered duration cohorts for realistic CI churn:
+    # 30% short jobs, 30% medium jobs, 40% full-length jobs.
+    short_params = _stress_ng_params_from_flavor(flavor, max(60, workload_duration // 5))
+    medium_params = _stress_ng_params_from_flavor(flavor, max(120, workload_duration // 2))
+    args_data["workload"]["mix"] = [
+        {"profile": "stress_ng", "weight": 3, "params": short_params},
+        {"profile": "stress_ng", "weight": 3, "params": medium_params},
+        {"profile": "stress_ng", "weight": 4, "params": stress_params},
+    ]
+
     return {
         "capacity": capacity,
         "planned_max_active_vms": max_active,
         "baseline_launches_per_minute": baseline_lpm,
         "duration_seconds": duration_seconds,
+        "flavor_vcpus": int(flavor["vcpus"]),
+        "flavor_ram_gib": max(1, int(flavor["ram"]) // 1024),
     }
 
 
@@ -455,9 +486,13 @@ def _plan_mixed(
     args_data["churn"]["baseline_launches_per_minute"] = max(1, math.ceil(churn_max / 8))
     args_data["churn"]["burst_windows"] = [{"start_second": 90, "end_second": 180, "launch_rate_multiplier": 2.0}]
     args_data["churn"]["workload_params"]["duration_seconds"] = 180
-    args_data["churn"]["workload_params"]["cpu_workers"] = 1
-    args_data["churn"]["workload_params"]["vm_workers"] = 1
-    args_data["churn"]["workload_params"]["vm_bytes"] = "512M"
+    churn_vcpus = int(spiky.get("flavor_vcpus", 1))
+    churn_ram_gib = max(1, int(spiky.get("flavor_ram_gib", 1)))
+    churn_vm_workers = max(1, churn_vcpus // 4)
+    churn_vm_bytes_gib = min(churn_ram_gib // 4, 16)
+    args_data["churn"]["workload_params"]["cpu_workers"] = churn_vcpus
+    args_data["churn"]["workload_params"]["vm_workers"] = churn_vm_workers
+    args_data["churn"]["workload_params"]["vm_bytes"] = f"{max(1, churn_vm_bytes_gib)}G"
     args_data["fio"]["client_counts"] = [fio_workers]
     args_data["fio"]["volumes_per_client"] = [volumes_per_client]
     args_data["fio"]["numjobs"] = [1]
