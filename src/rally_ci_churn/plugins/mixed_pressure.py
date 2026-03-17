@@ -29,6 +29,7 @@ from rally_ci_churn.results import build_metrics_output
 from rally_ci_churn.results import build_phase_output
 from rally_ci_churn.results import build_summary_output
 from rally_ci_churn.results import build_table_output
+from rally_ci_churn.results import format_markdown_table
 from rally_ci_churn.results import summarize_numeric_series
 
 
@@ -472,16 +473,13 @@ runcmd:
             rows,
             ["server", "status", "duration_seconds", "artifact", "error", "wave", "iteration"],
         )
-        lines = [
-            "## VM churn summary",
-            "",
-            "| Server | Status | Duration (s) | Artifact | Error |",
-            "|--------|--------|--------------|----------|-------|",
+        headers = ["Server", "Status", "Duration (s)", "Artifact", "Error"]
+        table_rows = [
+            [row["server"], row["status"], row["duration_seconds"], row["artifact"], row["error"]]
+            for row in rows
         ]
-        for row in rows:
-            lines.append(
-                f"| {row['server']} | {row['status']} | {row['duration_seconds']} | {row['artifact']} | {row['error']} |"
-            )
+        lines = ["## VM churn summary", ""]
+        lines.extend(format_markdown_table(headers, table_rows))
         (churn_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _build_top_level_summary(
@@ -597,16 +595,9 @@ runcmd:
             writer = csv.writer(stream)
             writer.writerow(["component", "status", "count", "completed", "failed", "timed_out", "peak_active", "details"])
             writer.writerows(component_rows)
-        lines = [
-            "## Mixed pressure summary",
-            "",
-            "| Component | Status | Count | Completed | Failed | Timed out | Peak active | Details |",
-            "|-----------|--------|-------|-----------|--------|-----------|-------------|---------|",
-        ]
-        for row in component_rows:
-            lines.append(
-                f"| {row[0]} | {row[1]} | {row[2]} | {row[3]} | {row[4]} | {row[5]} | {row[6]} | {row[7]} |"
-            )
+        headers = ["Component", "Status", "Count", "Completed", "Failed", "Timed out", "Peak active", "Details"]
+        lines = ["## Mixed pressure summary", ""]
+        lines.extend(format_markdown_table(headers, component_rows))
         (artifacts_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
         manifest = {
             "summary_json": str(artifacts_dir / "summary.json"),

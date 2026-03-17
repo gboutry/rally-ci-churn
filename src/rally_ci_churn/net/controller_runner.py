@@ -608,34 +608,65 @@ def _run_ring(
     return rows
 
 
+def _format_markdown_table(
+    headers: list[str],
+    rows: list[list[object]],
+) -> list[str]:
+    """Build a column-aligned Markdown table."""
+    str_rows = [[str(cell) for cell in row] for row in rows]
+    widths = [len(h) for h in headers]
+    for row in str_rows:
+        for i, cell in enumerate(row):
+            if i < len(widths):
+                widths[i] = max(widths[i], len(cell))
+
+    def _fmt(cells: list[str]) -> str:
+        padded = [cell.ljust(widths[i]) for i, cell in enumerate(cells)]
+        return "| " + " | ".join(padded) + " |"
+
+    lines = [_fmt(headers)]
+    lines.append("|" + "|".join("-" * (w + 2) for w in widths) + "|")
+    for row in str_rows:
+        lines.append(_fmt(row))
+    return lines
+
+
 def _write_markdown(output_dir: Path, scenario_slug: str, rows: list[dict[str, object]]) -> None:
     if scenario_slug == "net-many-to-one":
-        header = [
-            "## Summary Table",
-            "",
-            "| Case | Mode | Protocol | Clients | Throughput (Mb/s) | Avg Client (Mb/s) | Max Client (Mb/s) | Retransmits | Jitter (ms) | Lost % | Success Rate |",
-            "|------|------|----------|---------|-------------------|-------------------|-------------------|-------------|-------------|--------|--------------|",
+        headers = [
+            "Case", "Mode", "Protocol", "Clients", "Throughput (Mb/s)",
+            "Avg Client (Mb/s)", "Max Client (Mb/s)", "Retransmits",
+            "Jitter (ms)", "Lost %", "Success Rate",
         ]
-        for row in rows:
-            header.append(
-                "| {case_id} | {mode} | {protocol} | {client_count} | {throughput_mbps:.2f} | {avg_client_mbps:.2f} | {max_client_mbps:.2f} | {retransmits:.0f} | {jitter_ms:.2f} | {lost_percent:.2f} | {success_rate:.3f} |".format(
-                    **row
-                )
-            )
+        table_rows = [
+            [
+                row["case_id"], row["mode"], row["protocol"],
+                row["client_count"], f"{row['throughput_mbps']:.2f}",
+                f"{row['avg_client_mbps']:.2f}", f"{row['max_client_mbps']:.2f}",
+                f"{row['retransmits']:.0f}", f"{row['jitter_ms']:.2f}",
+                f"{row['lost_percent']:.2f}", f"{row['success_rate']:.3f}",
+            ]
+            for row in rows
+        ]
     else:
-        header = [
-            "## Summary Table",
-            "",
-            "| Case | Protocol | Participants | Flows | Throughput (Mb/s) | Avg Flow (Mb/s) | Max Flow (Mb/s) | Retransmits | Jitter (ms) | Lost % | Imbalance Ratio |",
-            "|------|----------|--------------|-------|-------------------|-----------------|-----------------|-------------|-------------|--------|-----------------|",
+        headers = [
+            "Case", "Protocol", "Participants", "Flows", "Throughput (Mb/s)",
+            "Avg Flow (Mb/s)", "Max Flow (Mb/s)", "Retransmits",
+            "Jitter (ms)", "Lost %", "Imbalance Ratio",
         ]
-        for row in rows:
-            header.append(
-                "| {case_id} | {protocol} | {participant_count} | {flow_count} | {throughput_mbps:.2f} | {avg_flow_mbps:.2f} | {max_flow_mbps:.2f} | {retransmits:.0f} | {jitter_ms:.2f} | {lost_percent:.2f} | {imbalance_ratio:.3f} |".format(
-                    **row
-                )
-            )
-    (output_dir / "summary.md").write_text("\n".join(header) + "\n", encoding="utf-8")
+        table_rows = [
+            [
+                row["case_id"], row["protocol"], row["participant_count"],
+                row["flow_count"], f"{row['throughput_mbps']:.2f}",
+                f"{row['avg_flow_mbps']:.2f}", f"{row['max_flow_mbps']:.2f}",
+                f"{row['retransmits']:.0f}", f"{row['jitter_ms']:.2f}",
+                f"{row['lost_percent']:.2f}", f"{row['imbalance_ratio']:.3f}",
+            ]
+            for row in rows
+        ]
+    lines = ["## Summary Table", ""]
+    lines.extend(_format_markdown_table(headers, table_rows))
+    (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _write_csv(output_dir: Path, rows: list[dict[str, object]]) -> None:

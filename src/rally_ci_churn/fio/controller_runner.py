@@ -184,19 +184,47 @@ def _load_case_payload(json_path: Path, stdout_text: str, case_id: str) -> dict[
     raise RuntimeError(f"fio did not produce valid JSON for {case_id}. Output tail:\n{snippet}")
 
 
+def _format_markdown_table(
+    headers: list[str],
+    rows: list[list[object]],
+) -> list[str]:
+    """Build a column-aligned Markdown table."""
+    str_rows = [[str(cell) for cell in row] for row in rows]
+    widths = [len(h) for h in headers]
+    for row in str_rows:
+        for i, cell in enumerate(row):
+            if i < len(widths):
+                widths[i] = max(widths[i], len(cell))
+
+    def _fmt(cells: list[str]) -> str:
+        padded = [cell.ljust(widths[i]) for i, cell in enumerate(cells)]
+        return "| " + " | ".join(padded) + " |"
+
+    lines = [_fmt(headers)]
+    lines.append("|" + "|".join("-" * (w + 2) for w in widths) + "|")
+    for row in str_rows:
+        lines.append(_fmt(row))
+    return lines
+
+
 def _write_summary_markdown(output_dir: Path, rows: list[dict[str, object]]) -> None:
-    lines = [
-        "## Summary Table",
-        "",
-        "| Client Nodes | Volumes/Client | Total Volumes | Profile | RW | Block Size | NumJobs | IoDepth | Throughput (BW) | IOPS | Avg Latency (ms) | 99th Percentile Latency (ms) |",
-        "|--------------|----------------|---------------|---------|----|------------|---------|---------|-----------------|------|------------------|-----------------------------|",
+    headers = [
+        "Client Nodes", "Volumes/Client", "Total Volumes", "Profile", "RW",
+        "Block Size", "NumJobs", "IoDepth", "Throughput (BW)", "IOPS",
+        "Avg Latency (ms)", "99th Percentile Latency (ms)",
     ]
-    for row in rows:
-        lines.append(
-            "| {client_nodes} | {volumes_per_client} | {total_volumes} | {profile_name} | {rw_mode} | {block_size} | {numjobs} | {iodepth} | {throughput_human} | {iops_human} | {avg_latency_ms:.2f} | {p99_latency_ms:.2f} |".format(
-                **row
-            )
-        )
+    table_rows = [
+        [
+            row["client_nodes"], row["volumes_per_client"], row["total_volumes"],
+            row["profile_name"], row["rw_mode"], row["block_size"],
+            row["numjobs"], row["iodepth"], row["throughput_human"],
+            row["iops_human"], f"{row['avg_latency_ms']:.2f}",
+            f"{row['p99_latency_ms']:.2f}",
+        ]
+        for row in rows
+    ]
+    lines = ["## Summary Table", ""]
+    lines.extend(_format_markdown_table(headers, table_rows))
     lines.append("")
     for row in rows:
         case_id = str(row["case_id"])

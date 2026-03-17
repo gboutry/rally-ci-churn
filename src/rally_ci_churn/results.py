@@ -10,6 +10,34 @@ from statistics import median
 RESULT_PREFIX = "RALLY_CI_RESULT="
 
 
+def format_markdown_table(
+    headers: list[str],
+    rows: list[list[object]],
+) -> list[str]:
+    """Build a column-aligned Markdown table.
+
+    Returns a list of lines (no trailing newline).  Each column is padded
+    to the widest value in that column so the table renders neatly in
+    fixed-width contexts.
+    """
+    str_rows = [[str(cell) for cell in row] for row in rows]
+    widths = [len(h) for h in headers]
+    for row in str_rows:
+        for i, cell in enumerate(row):
+            if i < len(widths):
+                widths[i] = max(widths[i], len(cell))
+
+    def _fmt(cells: list[str]) -> str:
+        padded = [cell.ljust(widths[i]) for i, cell in enumerate(cells)]
+        return "| " + " | ".join(padded) + " |"
+
+    lines = [_fmt(headers)]
+    lines.append("|" + "|".join("-" * (w + 2) for w in widths) + "|")
+    for row in str_rows:
+        lines.append(_fmt(row))
+    return lines
+
+
 def build_table_output(
     title: str,
     description: str,
