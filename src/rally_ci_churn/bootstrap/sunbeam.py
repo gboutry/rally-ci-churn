@@ -22,6 +22,9 @@ import yaml
 
 _cloud_overrides: dict[str, str] = {}
 
+_active_cloud_name: str = "sunbeam"
+_active_admin_cloud_name: str = "sunbeam-admin"
+
 
 @contextmanager
 def cloud_overrides(
@@ -151,7 +154,7 @@ def _resolve_cacert(source_path: Path, value: str) -> str:
 
 def _normalize_clouds(source_path: Path) -> dict[str, object]:
     config = yaml.safe_load(source_path.read_text(encoding="utf-8")) or {}
-    for cloud_name in ("sunbeam", "sunbeam-admin"):
+    for cloud_name in (_active_cloud_name, _active_admin_cloud_name):
         cloud_entry = config.get("clouds", {}).get(cloud_name)
         if isinstance(cloud_entry, dict):
             cloud_entry["cacert"] = _resolve_cacert(source_path, str(cloud_entry.get("cacert", "")))
@@ -159,8 +162,8 @@ def _normalize_clouds(source_path: Path) -> dict[str, object]:
 
 
 def _select_sunbeam_dns(clouds_yaml: Path) -> list[str]:
-    subnets = json.loads(_run_openstack(clouds_yaml, "sunbeam", "subnet", "list", "-f", "json", "-c", "ID", "-c", "Name", "-c", "Network"))
-    networks = json.loads(_run_openstack(clouds_yaml, "sunbeam", "network", "list", "-f", "json", "-c", "ID", "-c", "Name"))
+    subnets = json.loads(_run_openstack(clouds_yaml, _active_cloud_name, "subnet", "list", "-f", "json", "-c", "ID", "-c", "Name", "-c", "Network"))
+    networks = json.loads(_run_openstack(clouds_yaml, _active_cloud_name, "network", "list", "-f", "json", "-c", "ID", "-c", "Name"))
     network_ids_by_name = {network["Name"]: network["ID"] for network in networks}
     preferred_subnet_id = ""
     for subnet_name in ("gtestos-subnet",):
@@ -179,7 +182,7 @@ def _select_sunbeam_dns(clouds_yaml: Path) -> list[str]:
         preferred_subnet_id = subnets[0]["ID"]
     if not preferred_subnet_id:
         return []
-    raw = _run_openstack(clouds_yaml, "sunbeam", "subnet", "show", "-f", "value", "-c", "dns_nameservers", preferred_subnet_id)
+    raw = _run_openstack(clouds_yaml, _active_cloud_name, "subnet", "show", "-f", "value", "-c", "dns_nameservers", preferred_subnet_id)
     if not raw:
         return []
     try:
@@ -189,11 +192,11 @@ def _select_sunbeam_dns(clouds_yaml: Path) -> list[str]:
 
 
 def _build_base_args(clouds_yaml: Path, config: dict[str, object]) -> dict[str, object]:
-    sunbeam = _mapping_value(_mapping_value(config, "clouds"), "sunbeam")
+    sunbeam = _mapping_value(_mapping_value(config, "clouds"), _active_cloud_name)
     sunbeam_auth = _mapping_value(sunbeam, "auth")
-    image_names = _run_openstack(clouds_yaml, "sunbeam-admin", "image", "list", "-f", "value", "-c", "Name").splitlines()
-    flavor_names = _run_openstack(clouds_yaml, "sunbeam-admin", "flavor", "list", "-f", "value", "-c", "Name").splitlines()
-    external_networks = _run_openstack(clouds_yaml, "sunbeam-admin", "network", "list", "--external", "-f", "value", "-c", "Name").splitlines()
+    image_names = _run_openstack(clouds_yaml, _active_admin_cloud_name, "image", "list", "-f", "value", "-c", "Name").splitlines()
+    flavor_names = _run_openstack(clouds_yaml, _active_admin_cloud_name, "flavor", "list", "-f", "value", "-c", "Name").splitlines()
+    external_networks = _run_openstack(clouds_yaml, _active_admin_cloud_name, "network", "list", "--external", "-f", "value", "-c", "Name").splitlines()
     image_name = _pick_exact_or_prefix([name for name in image_names if name], ("ubuntu",), "ubuntu")
     flavor_name = _pick_exact_or_prefix([name for name in flavor_names if name], ("m1.benchmark", "m1.tiny", "m1.small"), "m1.")
     if "external-network" in external_networks:
@@ -202,7 +205,7 @@ def _build_base_args(clouds_yaml: Path, config: dict[str, object]) -> dict[str, 
         external_network = [name for name in external_networks if name][0]
     else:
         raise RuntimeError(f"Unable to determine external network from {external_networks!r}")
-    external_network_id = _run_openstack(clouds_yaml, "sunbeam-admin", "network", "show", "-f", "value", "-c", "id", external_network)
+    external_network_id = _run_openstack(clouds_yaml, _active_admin_cloud_name, "network", "show", "-f", "value", "-c", "id", external_network)
     swift_cacert = str(sunbeam.get("cacert", "") or "")
     swift_cacert_b64 = ""
     if swift_cacert:
@@ -1223,11 +1226,21 @@ if set(PRESET_DEFINITIONS) != SUPPORTED_PRESETS:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Generate Sunbeam benchmark args and adminrc.")
+    parser = argparse.ArgumentParser(description="Generate benchmark args and adminrc.")
     parser.add_argument("--clouds-yaml", required=True)
     parser.add_argument("--preset", default=DEFAULT_PRESET, choices=sorted(SUPPORTED_PRESETS))
     parser.add_argument("--output-args", required=True)
     parser.add_argument("--output-adminrc", required=True)
+    parser.add_argument(
+        "--cloud-name",
+        default="sunbeam",
+        help="Name of the regular cloud entry in clouds.yaml (default: sunbeam)",
+    )
+    parser.add_argument(
+        "--admin-cloud-name",
+        default="sunbeam-admin",
+        help="Name of the admin cloud entry in clouds.yaml (default: sunbeam-admin)",
+    )
     return parser
 
 
@@ -1271,8 +1284,11 @@ def build_preset(
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _active_cloud_name, _active_admin_cloud_name
     parser = build_parser()
     args = parser.parse_args(argv)
+    _active_cloud_name = args.cloud_name
+    _active_admin_cloud_name = args.admin_cloud_name
     clouds_yaml = Path(args.clouds_yaml).resolve()
     output_args = Path(args.output_args).resolve()
     output_adminrc = Path(args.output_adminrc).resolve()
@@ -1289,7 +1305,7 @@ def main(argv: list[str] | None = None) -> int:
         output_adminrc.parent.mkdir(parents=True, exist_ok=True)
         output_args.write_text(render_preset_args(args.preset, rendered_args), encoding="utf-8")
         output_args.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        admin_cloud = _mapping_value(_mapping_value(config, "clouds"), "sunbeam-admin")
+        admin_cloud = _mapping_value(_mapping_value(config, "clouds"), _active_admin_cloud_name)
         _write_adminrc(output_adminrc, admin_cloud)
     print("Environment ready.\n")
     print(f"Generated:\n  {output_args}\n  {output_adminrc}\n")
@@ -1302,6 +1318,12 @@ def main(argv: list[str] | None = None) -> int:
     if definition.recommended_next_preset:
         print(f"  next: {definition.recommended_next_preset}")
     print("")
+    if definition.required_images:
+        print("Required images (must be uploaded before running the task):")
+        for img in definition.required_images:
+            print(f"  {img}")
+        print("  Build and upload: ./scripts/build_imagecraft_vm.sh images/<image-name>")
+        print("")
     print(
         "Next steps:\n"
         "  source .venv/bin/activate\n"

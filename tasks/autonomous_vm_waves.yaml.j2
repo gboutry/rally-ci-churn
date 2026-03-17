@@ -13,6 +13,9 @@
 {% set workload_cfg = workload or {} %}
 {% set wave_vm_count = scenario_cfg.vm_count or scenario_cfg.concurrency or 1 %}
 {% set runner_concurrency = scenario_cfg.task_concurrency or scenario_cfg.runner_concurrency or scenario_cfg.concurrency or 1 %}
+{% set _per_vm_timeout = (scenario_cfg.timeout_seconds or 3600) | int %}
+{% set _runs_per_thread = ((wave_vm_count | int + runner_concurrency | int - 1) // (runner_concurrency | int)) %}
+{% set _runner_timeout = (_runs_per_thread * _per_vm_timeout + 300) if _per_vm_timeout > 0 else 86400 %}
 ---
 version: 2
 title: "{{ title }}"
@@ -101,7 +104,7 @@ subtasks:
       constant:
         times: {{ wave_vm_count }}
         concurrency: {{ runner_concurrency }}
-        timeout: {{ scenario_cfg.timeout_seconds or 3600 if (scenario_cfg.timeout_seconds or 3600) > 0 else 86400 }}
+        timeout: {{ _runner_timeout }}
     sla:
       failure_rate:
         max: 0

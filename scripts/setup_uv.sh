@@ -13,7 +13,7 @@ usage() {
 Usage: $0 <clouds.yaml> [preset] [output-args.yaml]
 
 Bootstraps a local .venv, installs Rally/OpenStack dependencies and the local
-plugin package, then generates Sunbeam-oriented args and adminrc files.
+plugin package, then generates benchmark args and adminrc files.
 
 Supported presets:
   smoke
@@ -28,6 +28,10 @@ Supported presets:
   failure-storm
   quota-edge
   tenant-churn
+
+Environment variables:
+  CLOUD_NAME        Cloud entry name in clouds.yaml (default: sunbeam)
+  ADMIN_CLOUD_NAME  Admin cloud entry name in clouds.yaml (default: sunbeam-admin)
 EOF
 }
 
@@ -48,6 +52,8 @@ ARGS_OUTPUT="${3:-${DEFAULT_ARGS_OUTPUT}}"
 ARGS_OUTPUT="$(realpath -m "${ARGS_OUTPUT}")"
 ADMINRC_OUTPUT="${ADMINRC_OUTPUT:-${DEFAULT_ADMINRC_OUTPUT}}"
 ADMINRC_OUTPUT="$(realpath -m "${ADMINRC_OUTPUT}")"
+CLOUD_NAME="${CLOUD_NAME:-sunbeam}"
+ADMIN_CLOUD_NAME="${ADMIN_CLOUD_NAME:-sunbeam-admin}"
 
 if [ ! -f "${CLOUDS_YAML}" ]; then
     echo "clouds.yaml not found: ${CLOUDS_YAML}" >&2
@@ -84,4 +90,6 @@ export RALLY_CI_CHURN_OPENSTACK_BIN="${VENV_DIR}/bin/openstack"
     --clouds-yaml "${CLOUDS_YAML}" \
     --preset "${PRESET_ID}" \
     --output-args "${ARGS_OUTPUT}" \
-    --output-adminrc "${ADMINRC_OUTPUT}"
+    --output-adminrc "${ADMINRC_OUTPUT}" \
+    --cloud-name "${CLOUD_NAME}" \
+    --admin-cloud-name "${ADMIN_CLOUD_NAME}"
