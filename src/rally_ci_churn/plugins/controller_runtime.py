@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
@@ -433,6 +434,25 @@ class ControllerRuntimeBase(ParallelBootMixin, vm_utils.VMScenario):
         except Exception:
             return
 
+    def _wait_for_ssh_banner(self, ip_address: str, timeout_seconds: int) -> None:
+        """Wait until sshd is sending its protocol banner before handing off to paramiko.
+
+        Paramiko logs spurious ERROR messages when it connects before sshd has
+        printed its banner (the server accepts the TCP connection but the SSH
+        version string is not yet available).  By polling until we can read the
+        banner ourselves we avoid that noise without touching paramiko internals.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection((ip_address, SSH_PORT), timeout=3) as sock:
+                    data = sock.recv(64)
+                    if data.startswith(b"SSH-"):
+                        return
+            except OSError:
+                pass
+            time.sleep(2)
+
     @atomic.action_timer("controller.connect_ssh")
     def _ssh(
         self,
@@ -441,9 +461,58 @@ class ControllerRuntimeBase(ParallelBootMixin, vm_utils.VMScenario):
         private_key: str,
         timeout_seconds: int,
     ) -> sshutils.SSH:
+        self._wait_for_ssh_banner(ip_address, timeout_seconds)
         ssh = sshutils.SSH(username, ip_address, port=SSH_PORT, pkey=private_key)
         self._wait_for_ssh(ssh, timeout=timeout_seconds, interval=2)
         return ssh
+
+    @atomic.action_timer("workers.wait_for_tcp_ports")
+    def _wait_for_tcp_ports_on_controller(
+        self,
+        ssh: sshutils.SSH,
+        targets: list[tuple[str, int]],
+        timeout_seconds: int,
+    ) -> None:
+        """Wait until all (ip, port) targets are accepting TCP connections.
+
+        Runs a single Python probe script on the controller VM via a single SSH
+        channel.  The script uses Python threads to probe all targets in parallel,
+        avoiding both sequential O(N) wall time and the concurrent-channel
+        ChannelException that arises from calling ssh.run() from multiple threads.
+        """
+        if not targets:
+            return
+        probe_script = (
+            "import socket, time, threading\n"
+            f"targets = {targets!r}\n"
+            f"deadline = time.monotonic() + {int(timeout_seconds)}\n"
+            "failed = []\n"
+            "lock = threading.Lock()\n"
+            "def probe(ip, port):\n"
+            "    while time.monotonic() < deadline:\n"
+            "        try:\n"
+            "            s = socket.create_connection((ip, port), timeout=2)\n"
+            "            s.close()\n"
+            "            return\n"
+            "        except Exception:\n"
+            "            time.sleep(2)\n"
+            "    with lock: failed.append(f'{ip}:{port}')\n"
+            "threads = [threading.Thread(target=probe, args=(ip, port)) for ip, port in targets]\n"
+            "for t in threads: t.start()\n"
+            "for t in threads: t.join()\n"
+            "if failed:\n"
+            "    raise SystemExit(f'timed out: {failed}')\n"
+        )
+        exit_status, _ = ssh.run(
+            ["python3", "-"],
+            stdin=probe_script,
+            timeout=timeout_seconds + 30,
+            raise_on_error=False,
+        )
+        if exit_status != 0:
+            raise rally_exceptions.ScriptError(
+                message=f"TCP port readiness probe timed out after {timeout_seconds}s"
+            )
 
     @atomic.action_timer("artifacts.download")
     def _download_tree(self, ssh: sshutils.SSH, remote_dir: str, local_dir: Path) -> None:

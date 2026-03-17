@@ -7,11 +7,8 @@ import shutil
 import tempfile
 import time
 import uuid
-from concurrent.futures import as_completed
-from concurrent.futures import ThreadPoolExecutor
 from importlib import resources
 from pathlib import Path
-from typing import cast
 
 from rally import exceptions as rally_exceptions
 from rally.task import atomic
@@ -263,7 +260,8 @@ runcmd:
             **boot_kwargs,
         )
 
-    def _wait_for_worker_fio_ready_raw(
+    @atomic.action_timer("worker.wait_ready")
+    def _wait_for_worker_fio_ready(
         self,
         ssh: sshutils.SSH,
         fixed_ip: str,
@@ -295,15 +293,15 @@ runcmd:
             message=f"Worker fio server {fixed_ip}:{fio_port} did not become ready before timeout"
         )
 
-    @atomic.action_timer("worker.wait_ready")
-    def _wait_for_worker_fio_ready(
+    def _wait_for_all_workers_fio_ready(
         self,
         ssh: sshutils.SSH,
-        fixed_ip: str,
+        workers: list[dict[str, object]],
         fio_port: int,
         timeout_seconds: int = WORKER_READY_TIMEOUT_SECONDS,
     ) -> None:
-        self._wait_for_worker_fio_ready_raw(ssh, fixed_ip, fio_port, timeout_seconds)
+        targets = [(str(w["fixed_ip"]), fio_port) for w in workers]
+        self._wait_for_tcp_ports_on_controller(ssh, targets, timeout_seconds)
 
     def _matrix_cases(
         self,
@@ -697,36 +695,9 @@ class FioDistributedScenario(_FioDistributedBase):
                 keypair["private"],
                 ssh_connect_timeout_seconds,
             )
-            _ready_first_error: Exception | None = None
-            with atomic.ActionTimer(cast(atomic.ActionTimerMixin, self), "workers.wait_ready_group"):
-                if len(workers) <= 1:
-                    for worker in workers:
-                        self._wait_for_worker_fio_ready_raw(
-                            ssh, str(worker["fixed_ip"]), fio_port, worker_ready_timeout_seconds
-                        )
-                else:
-                    with ThreadPoolExecutor(
-                        max_workers=min(boot_concurrency, len(workers)),
-                        thread_name_prefix="rally-fio-ready",
-                    ) as executor:
-                        _ready_futures = {
-                            executor.submit(
-                                self._wait_for_worker_fio_ready_raw,
-                                ssh,
-                                str(worker["fixed_ip"]),
-                                fio_port,
-                                worker_ready_timeout_seconds,
-                            ): worker
-                            for worker in workers
-                        }
-                        for _future in as_completed(_ready_futures):
-                            try:
-                                _future.result()
-                            except Exception as exc:
-                                if _ready_first_error is None:
-                                    _ready_first_error = exc
-            if _ready_first_error is not None:
-                raise _ready_first_error
+            self._wait_for_all_workers_fio_ready(
+                ssh, workers, fio_port, worker_ready_timeout_seconds
+            )
             matrix = {
                 "runtime_seconds": runtime_seconds,
                 "ramp_time_seconds": ramp_time_seconds,
