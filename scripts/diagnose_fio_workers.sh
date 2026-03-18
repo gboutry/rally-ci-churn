@@ -72,8 +72,27 @@ CREATED_SERVERS=()
 CREATED_VOLUMES=()
 CREATED_FIPS=()
 CONTROLLER_FIP=""
+SAVED_CORES=""
+SAVED_RAM=""
+SAVED_INSTANCES=""
+SAVED_GIGABYTES=""
+SAVED_VOLUMES=""
+PROJECT_ID=""
 
 cleanup_resources() {
+    # Always restore quotas, even if we keep VMs
+    if [ -n "$PROJECT_ID" ] && [ -n "$SAVED_CORES" ]; then
+        echo ""
+        echo "=== Restoring quotas ==="
+        openstack quota set "$PROJECT_ID" \
+            --cores "$SAVED_CORES" \
+            --ram "$SAVED_RAM" \
+            --instances "$SAVED_INSTANCES" \
+            --gigabytes "$SAVED_GIGABYTES" \
+            --volumes "$SAVED_VOLUMES" 2>/dev/null || true
+        echo "  Restored: cores=$SAVED_CORES ram=$SAVED_RAM instances=$SAVED_INSTANCES gigabytes=$SAVED_GIGABYTES volumes=$SAVED_VOLUMES"
+    fi
+
     if [ "$CLEANUP" != "true" ]; then
         echo ""
         echo "=== Resources left running for inspection ==="
@@ -108,8 +127,20 @@ cleanup_resources() {
 }
 trap cleanup_resources EXIT
 
-# --- Create network and keypair if needed ---
+# --- Save current quotas and set unlimited ---
 echo "=== Setup ==="
+
+PROJECT_ID=$(openstack token issue -f value -c project_id)
+echo "  Project: $PROJECT_ID"
+SAVED_CORES=$(openstack quota show "$PROJECT_ID" -f value -c cores)
+SAVED_RAM=$(openstack quota show "$PROJECT_ID" -f value -c ram)
+SAVED_INSTANCES=$(openstack quota show "$PROJECT_ID" -f value -c instances)
+SAVED_GIGABYTES=$(openstack quota show "$PROJECT_ID" -f value -c gigabytes)
+SAVED_VOLUMES=$(openstack quota show "$PROJECT_ID" -f value -c volumes)
+echo "  Saved quotas: cores=$SAVED_CORES ram=$SAVED_RAM instances=$SAVED_INSTANCES gigabytes=$SAVED_GIGABYTES volumes=$SAVED_VOLUMES"
+openstack quota set "$PROJECT_ID" \
+    --cores -1 --ram -1 --instances -1 --gigabytes -1 --volumes -1
+echo "  Quotas set to unlimited (will restore on exit)"
 
 if [ -z "$KEY_NAME" ]; then
     KEY_NAME="$TAG-key"
