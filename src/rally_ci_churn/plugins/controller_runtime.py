@@ -503,15 +503,16 @@ class ControllerRuntimeBase(ParallelBootMixin, vm_utils.VMScenario):
             "if failed:\n"
             "    raise SystemExit(f'timed out: {failed}')\n"
         )
-        exit_status, _ = ssh.run(
+        exit_status, output = ssh.run(
             ["python3", "-"],
             stdin=probe_script,
             timeout=timeout_seconds + 30,
             raise_on_error=False,
         )
         if exit_status != 0:
+            detail = str(output).strip() if output else ""
             raise rally_exceptions.ScriptError(
-                message=f"TCP port readiness probe timed out after {timeout_seconds}s"
+                message=f"TCP port readiness probe timed out after {timeout_seconds}s: {detail}"
             )
 
     @atomic.action_timer("artifacts.download")

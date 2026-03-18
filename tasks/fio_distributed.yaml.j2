@@ -80,6 +80,7 @@ subtasks:
         command_timeout_seconds: {{ controller_cfg.command_timeout_seconds or 0 }}
         boot_concurrency: {{ controller_cfg.boot_concurrency or 1 }}
         volume_concurrency: {{ controller_cfg.volume_concurrency or 1 }}
+        worker_ready_timeout_seconds: {{ controller_cfg.worker_ready_timeout_seconds or 600 }}
         boot_from_volume: {{ boot_volume_cfg.enabled or false }}
         root_volume_size_gib: {{ boot_volume_cfg.size_gib or 20 }}
 {% if boot_volume_cfg.volume_type is defined and boot_volume_cfg.volume_type is not none %}
