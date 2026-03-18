@@ -290,25 +290,55 @@ for attempt in $(seq 1 60); do
     sleep 3
 done
 
+# --- Upload host.list to controller ---
+echo ""
+echo "=== Uploading host.list to controller ==="
+HOSTLIST_LOCAL=$(mktemp)
+for ip in "${WORKER_IPS[@]}"; do
+    echo "${ip},${FIO_PORT}" >> "$HOSTLIST_LOCAL"
+done
+echo "  Local host.list (${#WORKER_IPS[@]} entries):"
+cat "$HOSTLIST_LOCAL" | sed 's/^/    /'
+scp $SSH_OPTS -i "$KEY_FILE" "$HOSTLIST_LOCAL" "ubuntu@$CONTROLLER_FIP:/tmp/host.list"
+rm -f "$HOSTLIST_LOCAL"
+echo "  Uploaded to controller:/tmp/host.list"
+
 # --- Diagnose from controller ---
 echo ""
 echo "=== Diagnosing workers from controller ==="
 echo ""
 
-DIAG_SCRIPT=$(cat <<PYEOF
+DIAG_SCRIPT=$(cat <<'PYEOF'
 import socket, subprocess, time, sys
 
-workers = sys.argv[1:]
-fio_port = $FIO_PORT
-timeout = $TIMEOUT
+# Read workers from host.list (same format as fio --client=hostfile)
+workers = []
+fio_port = None
+with open("/tmp/host.list") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(",")
+        ip = parts[0]
+        port = int(parts[1]) if len(parts) > 1 else 8765
+        fio_port = port
+        workers.append((ip, port))
+
+if not workers:
+    print("ERROR: /tmp/host.list is empty")
+    sys.exit(1)
+
+timeout = int(sys.argv[1]) if len(sys.argv) > 1 else 600
 deadline = time.monotonic() + timeout
 
 print(f"Probing {len(workers)} workers on port {fio_port}, timeout {timeout}s")
+print(f"Host list: /tmp/host.list")
 print()
 
 # Phase 1: Check TCP connectivity to SSH (port 22)
 print("--- Phase 1: SSH port check (instant) ---")
-for ip in workers:
+for ip, port in workers:
     try:
         s = socket.create_connection((ip, 22), timeout=3)
         s.close()
@@ -318,46 +348,50 @@ for ip in workers:
 
 print()
 print("--- Phase 2: fio port check (polling) ---")
-pending = set(workers)
+pending = {ip for ip, port in workers}
+port_by_ip = {ip: port for ip, port in workers}
 start = time.monotonic()
 while pending and time.monotonic() < deadline:
     still_pending = set()
     for ip in sorted(pending):
         try:
-            s = socket.create_connection((ip, fio_port), timeout=2)
+            s = socket.create_connection((ip, port_by_ip[ip]), timeout=2)
             s.close()
             elapsed = time.monotonic() - start
-            print(f"  {ip}:{fio_port}  READY after {elapsed:.0f}s")
+            print(f"  {ip}:{port_by_ip[ip]}  READY after {elapsed:.0f}s")
         except Exception:
             still_pending.add(ip)
     pending = still_pending
     if pending:
+        remaining = deadline - time.monotonic()
+        print(f"  ... {len(pending)} still pending, {remaining:.0f}s remaining")
         time.sleep(5)
 
 print()
 if pending:
     print(f"--- FAILED: {len(pending)} workers never became ready ---")
     for ip in sorted(pending):
-        print(f"  {ip}:{fio_port}  TIMED OUT")
+        print(f"  {ip}:{port_by_ip[ip]}  TIMED OUT")
 
     print()
-    print("--- Phase 3: Diagnosing failed workers ---")
+    print("--- Phase 3: Diagnosing failed workers via SSH ---")
     for ip in sorted(pending):
+        port = port_by_ip[ip]
         print(f"  [{ip}] Checking cloud-init and fio status...")
         try:
             r = subprocess.run(
                 ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                  "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10",
                  f"ubuntu@{ip}",
-                 "echo CLOUD_INIT_STATUS=\$(cloud-init status 2>/dev/null || echo unknown);"
-                 "echo FIO_PROCESS=\$(pgrep -c fio 2>/dev/null || echo 0);"
-                 "echo FIO_LISTEN=\$(ss -tlnp 2>/dev/null | grep $FIO_PORT || echo none);"
-                 "echo DISKS=\$(lsblk -dnpo NAME,TYPE 2>/dev/null | awk '\$2==\"disk\"{print \$1}' | tr '\\n' ' ');"
-                 "echo CLOUD_INIT_LOG_TAIL=;"
-                 "tail -5 /var/log/cloud-init-output.log 2>/dev/null || echo 'no log'"],
+                 f"echo CLOUD_INIT_STATUS=$(cloud-init status 2>/dev/null || echo unknown);"
+                 f"echo FIO_PROCESS=$(pgrep -a fio 2>/dev/null || echo none);"
+                 f"echo FIO_LISTEN=$(ss -tlnp 2>/dev/null | grep {port} || echo none);"
+                 f"echo DISKS=$(lsblk -dnpo NAME,TYPE 2>/dev/null | awk '$2==\"disk\"{{print $1}}' | tr '\\n' ' ');"
+                 f"echo CLOUD_INIT_LOG_TAIL=;"
+                 f"tail -20 /var/log/cloud-init-output.log 2>/dev/null || echo 'no log'"],
                 capture_output=True, text=True, timeout=30
             )
-            for line in r.stdout.strip().split("\\n"):
+            for line in r.stdout.strip().split("\n"):
                 print(f"    {line}")
             if r.stderr.strip():
                 print(f"    STDERR: {r.stderr.strip()[:200]}")
@@ -370,8 +404,13 @@ PYEOF
 )
 
 ssh $SSH_OPTS -i "$KEY_FILE" "ubuntu@$CONTROLLER_FIP" \
-    python3 - "${WORKER_IPS[@]}" <<< "$DIAG_SCRIPT"
+    python3 - "$TIMEOUT" <<< "$DIAG_SCRIPT"
 
 rm -f "$USERDATA_FILE"
 echo ""
 echo "=== Diagnosis complete ==="
+echo ""
+echo "To re-run diagnostics manually from the controller:"
+echo "  ssh -i $KEY_FILE ubuntu@$CONTROLLER_FIP"
+echo "  cat /tmp/host.list   # worker IPs in fio hostfile format"
+echo "  fio --client=/tmp/host.list /path/to/job.fio   # test fio directly"
