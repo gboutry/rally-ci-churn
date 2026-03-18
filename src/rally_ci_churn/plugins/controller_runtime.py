@@ -275,9 +275,6 @@ class ControllerRuntimeBase(ParallelBootMixin, vm_utils.VMScenario):
     """Common OpenStack orchestration helpers for controller-driven scenarios."""
 
     def _task_uuid(self) -> str:
-        owner_id = self.context.get("owner_id")
-        if owner_id:
-            return str(owner_id)
         task = self.context.get("task")
         if isinstance(task, dict) and task.get("uuid"):
             return str(task["uuid"])

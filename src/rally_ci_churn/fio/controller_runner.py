@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+FIO_CLIENT_GROUP_SIZE = 20
 
 BUILTIN_PROFILES = {
     "mixed-workload": {
@@ -178,6 +181,88 @@ def _extract_json_text(text: str) -> str | None:
     return text[start : end + 1]
 
 
+def _split_hostfile(
+    hostfile: Path, group_size: int, output_dir: Path, case_id: str,
+) -> list[Path]:
+    lines = [line for line in hostfile.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(lines) <= group_size:
+        return [hostfile]
+    groups: list[Path] = []
+    for i in range(0, len(lines), group_size):
+        chunk = lines[i : i + group_size]
+        group_path = output_dir / f"{case_id}.clients.{len(groups):02d}"
+        group_path.write_text("\n".join(chunk) + "\n", encoding="utf-8")
+        groups.append(group_path)
+    return groups
+
+
+def _run_fio_single_group(
+    group_hostfile: Path, jobfile: Path,
+) -> tuple[int, str]:
+    result = subprocess.run(
+        [
+            "fio",
+            "--output-format=json+",
+            "--eta=never",
+            f"--client={group_hostfile}",
+            str(jobfile),
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    return (result.returncode, result.stdout)
+
+
+def _run_fio_grouped(
+    group_hostfiles: list[Path], jobfile: Path,
+) -> list[tuple[int, str]]:
+    if len(group_hostfiles) == 1:
+        return [_run_fio_single_group(group_hostfiles[0], jobfile)]
+    with ThreadPoolExecutor(max_workers=len(group_hostfiles)) as pool:
+        futures = [
+            pool.submit(_run_fio_single_group, hf, jobfile)
+            for hf in group_hostfiles
+        ]
+        return [f.result() for f in futures]
+
+
+def _merge_fio_payloads(payloads: list[dict[str, object]]) -> dict[str, object]:
+    if len(payloads) == 1:
+        return payloads[0]
+    merged = dict(payloads[0])
+    all_client_stats: list[object] = []
+    all_jobs: list[object] = []
+    all_disk_util: list[object] = []
+    for p in payloads:
+        for entry in p.get("client_stats", []):
+            if isinstance(entry, dict) and entry.get("jobname") == "All clients":
+                continue
+            all_client_stats.append(entry)
+        for entry in p.get("jobs", []):
+            if isinstance(entry, dict) and entry.get("jobname") == "All clients":
+                continue
+            all_jobs.append(entry)
+        all_disk_util.extend(p.get("disk_util", []))
+    merged["client_stats"] = all_client_stats
+    merged["jobs"] = all_jobs
+    if all_disk_util:
+        merged["disk_util"] = all_disk_util
+    return merged
+
+
+def _collect_grouped_stdout(
+    group_results: list[tuple[int, str]], group_hostfiles: list[Path],
+) -> str:
+    parts: list[str] = []
+    for idx, ((rc, stdout), hf) in enumerate(zip(group_results, group_hostfiles)):
+        n_clients = len([l for l in hf.read_text(encoding="utf-8").splitlines() if l.strip()])
+        parts.append(f"=== Group {idx} ({hf.name}, {n_clients} clients, exit={rc}) ===")
+        parts.append(stdout)
+    return "\n".join(parts)
+
+
 def _load_case_payload(json_path: Path, stdout_text: str, case_id: str) -> dict[str, object]:
     candidates: list[str] = []
     if json_path.exists():
@@ -290,11 +375,7 @@ def main() -> int:
             "\n".join(f"{worker['fixed_ip']},{fio_port}" for worker in selected_workers) + "\n",
             encoding="utf-8",
         )
-        remote_args = [
-            "fio",
-            "--output-format=json+",
-            f"--client={hostfile}",
-        ]
+        group_hostfiles = _split_hostfile(hostfile, FIO_CLIENT_GROUP_SIZE, output_dir, case_id)
 
         slice_key = (client_nodes, volumes_per_client)
         if case["rw_mode"] in {"read", "randread", "randwrite"} and slice_key not in prefilled_slices:
@@ -316,13 +397,10 @@ def main() -> int:
                 volumes_per_client,
                 True,
             )
-            subprocess.run(
-                [*remote_args, str(prefill_job)],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
+            prefill_results = _run_fio_grouped(group_hostfiles, prefill_job)
+            for rc, stdout in prefill_results:
+                if rc != 0:
+                    raise RuntimeError(f"fio prefill failed for {case_id}: {stdout}")
             prefilled_slices.add(slice_key)
 
         _write_jobfile(
@@ -335,18 +413,25 @@ def main() -> int:
             False,
         )
         stdout_path = raw_dir / f"{case_id}.stdout"
-        completed = subprocess.run(
-            [*remote_args, str(case_job)],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        stdout_path.write_text(completed.stdout, encoding="utf-8")
-        if completed.returncode != 0:
-            raise RuntimeError(f"fio failed for {case_id}: {completed.stdout}")
+        group_results = _run_fio_grouped(group_hostfiles, case_job)
+        combined_stdout = _collect_grouped_stdout(group_results, group_hostfiles)
+        stdout_path.write_text(combined_stdout, encoding="utf-8")
+        for rc, stdout in group_results:
+            if rc != 0:
+                raise RuntimeError(f"fio failed for {case_id}: {combined_stdout}")
         json_path = raw_dir / f"{case_id}.json"
-        payload = _load_case_payload(json_path, completed.stdout, case_id)
+        if len(group_results) == 1:
+            payload = _load_case_payload(json_path, group_results[0][1], case_id)
+        else:
+            payloads: list[dict[str, object]] = []
+            for group_idx, (_rc, stdout) in enumerate(group_results):
+                group_json = raw_dir / f"{case_id}.group{group_idx:02d}.json"
+                group_label = f"{case_id} group {group_idx}"
+                payloads.append(_load_case_payload(group_json, stdout, group_label))
+            payload = _merge_fio_payloads(payloads)
+            json_path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8",
+            )
         stats = _read_direction_stats(payload, str(case["rw_mode"]))
         results.append(
             {
