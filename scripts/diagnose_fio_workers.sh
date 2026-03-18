@@ -132,11 +132,25 @@ echo "=== Setup ==="
 
 PROJECT_ID=$(openstack token issue -f value -c project_id)
 echo "  Project: $PROJECT_ID"
-SAVED_CORES=$(openstack quota show "$PROJECT_ID" -f value -c cores)
-SAVED_RAM=$(openstack quota show "$PROJECT_ID" -f value -c ram)
-SAVED_INSTANCES=$(openstack quota show "$PROJECT_ID" -f value -c instances)
-SAVED_GIGABYTES=$(openstack quota show "$PROJECT_ID" -f value -c gigabytes)
-SAVED_VOLUMES=$(openstack quota show "$PROJECT_ID" -f value -c volumes)
+_quota_val() {
+    openstack quota show "$PROJECT_ID" -f json | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+# Handle both flat {'cores': N} and table [{'Resource': 'cores', 'Limit': N}] formats
+if isinstance(data, list):
+    for row in data:
+        if row.get('Resource') == sys.argv[1]:
+            print(row['Limit']); sys.exit()
+    print(-1)
+else:
+    print(data.get(sys.argv[1], -1))
+" "$1"
+}
+SAVED_CORES=$(_quota_val cores)
+SAVED_RAM=$(_quota_val ram)
+SAVED_INSTANCES=$(_quota_val instances)
+SAVED_GIGABYTES=$(_quota_val gigabytes)
+SAVED_VOLUMES=$(_quota_val volumes)
 echo "  Saved quotas: cores=$SAVED_CORES ram=$SAVED_RAM instances=$SAVED_INSTANCES gigabytes=$SAVED_GIGABYTES volumes=$SAVED_VOLUMES"
 openstack quota set "$PROJECT_ID" \
     --cores -1 --ram -1 --instances -1 --gigabytes -1 --volumes -1
