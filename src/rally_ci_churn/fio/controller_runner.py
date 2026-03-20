@@ -166,6 +166,56 @@ def _read_direction_stats(payload: dict[str, object], rw_mode: str) -> dict[str,
     }
 
 
+def _per_client_stats(payload: dict[str, object], rw_mode: str) -> list[dict[str, object]]:
+    jobs = payload.get("jobs", [])
+    client_stats = payload.get("client_stats", [])
+    entries = jobs if isinstance(jobs, list) and jobs else client_stats if isinstance(client_stats, list) else []
+    if rw_mode in {"rw", "randrw", "readwrite", "randreadwrite"}:
+        directions = ["read", "write"]
+    else:
+        directions = ["read" if "read" in rw_mode else "write"]
+    rows: list[dict[str, object]] = []
+    for job in entries:
+        if not isinstance(job, dict):
+            continue
+        if job.get("jobname") == "All clients":
+            continue
+        hostname = str(job.get("hostname", "unknown"))
+        jobname = str(job.get("jobname", ""))
+        bw = 0.0
+        client_iops = 0.0
+        avg_lat = 0.0
+        p99_lat = 0.0
+        lat_count = 0
+        lat_sum = 0.0
+        for direction in directions:
+            stats = job.get(direction, {})
+            if not isinstance(stats, dict):
+                continue
+            bw += float(stats.get("bw_bytes", 0.0))
+            client_iops += float(stats.get("iops", 0.0))
+            clat_ns = stats.get("clat_ns", {})
+            if isinstance(clat_ns, dict):
+                if "mean" in clat_ns:
+                    lat_sum += float(clat_ns["mean"]) / 1_000_000.0
+                    lat_count += 1
+                percentiles = clat_ns.get("percentile", {})
+                if isinstance(percentiles, dict):
+                    p99_raw = percentiles.get("99.000000") or percentiles.get("99.00")
+                    if p99_raw:
+                        p99_lat = max(p99_lat, float(p99_raw) / 1_000_000.0)
+        avg_lat = lat_sum / lat_count if lat_count else 0.0
+        rows.append({
+            "hostname": hostname,
+            "jobname": jobname,
+            "bw": bw,
+            "iops": client_iops,
+            "avg_latency_ms": round(avg_lat, 2),
+            "p99_latency_ms": round(p99_lat, 2),
+        })
+    return rows
+
+
 def _human_bw(bytes_per_sec: float) -> str:
     value = float(bytes_per_sec)
     units = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"]
@@ -361,9 +411,32 @@ def _write_summary_markdown(output_dir: Path, rows: list[dict[str, object]]) -> 
                 f"- NumJobs: {row['numjobs']}",
                 f"- IoDepth: {row['iodepth']}",
                 "",
+            ]
+        )
+        client_details = row.get("client_details", [])
+        if client_details:
+            client_headers = ["Hostname", "Job", "BW", "IOPS", "Avg Latency (ms)", "P99 Latency (ms)"]
+            client_rows = [
+                [
+                    c["hostname"], c["jobname"],
+                    _human_bw(float(c["bw"])),
+                    _human_iops(float(c["iops"])),
+                    f"{c['avg_latency_ms']:.2f}",
+                    f"{c['p99_latency_ms']:.2f}",
+                ]
+                for c in client_details
+            ]
+            lines.extend(_format_markdown_table(client_headers, client_rows))
+            lines.append("")
+        lines.extend(
+            [
+                "<details><summary>Raw fio output</summary>",
+                "",
                 "```text",
                 stdout_path.read_text(encoding='utf-8', errors='replace').strip(),
                 "```",
+                "",
+                "</details>",
                 "",
             ]
         )
@@ -452,6 +525,7 @@ def main() -> int:
                 json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8",
             )
         stats = _read_direction_stats(payload, str(case["rw_mode"]))
+        client_details = _per_client_stats(payload, str(case["rw_mode"]))
         results.append(
             {
                 "case_id": case_id,
@@ -481,6 +555,7 @@ def main() -> int:
                 "iops_min_human": _human_iops(float(stats["iops_min"])),
                 "avg_latency_ms": round(float(stats["avg_latency_ms"]), 2),
                 "p99_latency_ms": round(float(stats["p99_latency_ms"]), 2),
+                "client_details": client_details,
             }
         )
 
