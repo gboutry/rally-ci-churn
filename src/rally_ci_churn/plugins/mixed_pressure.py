@@ -904,12 +904,15 @@ class MixedPressureScenario(_MixedPressureBase):
                 ssh, fio_workers, fio_port, worker_ready_timeout_seconds
             )
 
+            for worker in fio_workers:
+                worker["server"] = self.clients("nova").servers.get(worker["server"].id)
             fio_inventory = {
                 "fio_port": fio_port,
                 "workers": [
                     {
                         "name": worker["name"],
                         "fixed_ip": worker["fixed_ip"],
+                        "compute_host": getattr(worker["server"], "OS-EXT-SRV-ATTR:host", ""),
                         "devices": [f"/var/lib/rally-fio/devices/vol{index + 1:02d}" for index in range(max_fio_volumes)],
                     }
                     for worker in fio_workers
@@ -957,10 +960,24 @@ class MixedPressureScenario(_MixedPressureBase):
                 "ioengine": fio_ioengine,
                 "cases": fio_cases,
             }
+            many_server = self.clients("nova").servers.get(many_server.id)
+            for client in many_clients:
+                client["server"] = self.clients("nova").servers.get(client["server"].id)
             many_inventory = {
                 "ssh_user": ssh_user,
-                "server": {"name": many_server.name, "fixed_ip": self._fixed_ip(many_server)},
-                "clients": [{"name": client["name"], "fixed_ip": client["fixed_ip"]} for client in many_clients],
+                "server": {
+                    "name": many_server.name,
+                    "fixed_ip": self._fixed_ip(many_server),
+                    "compute_host": getattr(many_server, "OS-EXT-SRV-ATTR:host", ""),
+                },
+                "clients": [
+                    {
+                        "name": client["name"],
+                        "fixed_ip": client["fixed_ip"],
+                        "compute_host": getattr(client["server"], "OS-EXT-SRV-ATTR:host", ""),
+                    }
+                    for client in many_clients
+                ],
             }
             many_cases = []
             if many_mode == "iperf3":
@@ -1007,9 +1024,18 @@ class MixedPressureScenario(_MixedPressureBase):
                 },
                 "cases": many_cases,
             }
+            for participant in ring_participants:
+                participant["server"] = self.clients("nova").servers.get(participant["server"].id)
             ring_inventory = {
                 "ssh_user": ssh_user,
-                "participants": [{"name": participant["name"], "fixed_ip": participant["fixed_ip"]} for participant in ring_participants],
+                "participants": [
+                    {
+                        "name": participant["name"],
+                        "fixed_ip": participant["fixed_ip"],
+                        "compute_host": getattr(participant["server"], "OS-EXT-SRV-ATTR:host", ""),
+                    }
+                    for participant in ring_participants
+                ],
             }
             ring_cases = []
             for protocol in ring_protocols:

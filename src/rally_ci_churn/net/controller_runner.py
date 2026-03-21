@@ -8,6 +8,7 @@ import json
 import shlex
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 _LOG_PATH: Path | None = None
@@ -281,8 +282,7 @@ def _run_iperf_many_to_one(
             _wait_for_tcp(identity_file, ssh_user, server_host, port)
         case_id = str(case["case_id"])
         _log(f"many_to_one case start case_id={case_id}")
-        metrics: list[dict[str, float]] = []
-        for index, client in enumerate(clients):
+        def _run_client(index: int, client: dict[str, object]) -> dict[str, float]:
             command = _iperf_client_command(
                 server_ip,
                 ports[index],
@@ -309,8 +309,24 @@ def _run_iperf_many_to_one(
                 )
             json_path = raw_dir / f"{case_id}_{client['name']}.json"
             json_path.write_text(json.dumps(json.loads(result.stdout), indent=2, sort_keys=True), encoding="utf-8")
-            metrics.append(_parse_iperf_json(result.stdout, protocol))
+            return _parse_iperf_json(result.stdout, protocol)
+
+        with ThreadPoolExecutor(max_workers=len(clients)) as pool:
+            futures = [pool.submit(_run_client, i, c) for i, c in enumerate(clients)]
+            metrics: list[dict[str, float]] = [f.result() for f in futures]
         total_bps = sum(entry["throughput_bits_per_sec"] for entry in metrics)
+        client_details = [
+            {
+                "name": str(client["name"]),
+                "fixed_ip": str(client["fixed_ip"]),
+                "compute_host": str(client.get("compute_host", "")),
+                "throughput_mbps": round(metric["throughput_bits_per_sec"] / 1_000_000.0, 2),
+                "retransmits": metric["retransmits"],
+                "jitter_ms": round(metric["jitter_ms"], 2),
+                "lost_percent": round(metric["lost_percent"], 2),
+            }
+            for client, metric in zip(clients, metrics)
+        ]
         row = {
             "case_id": case_id,
             "mode": "iperf3",
@@ -322,10 +338,12 @@ def _run_iperf_many_to_one(
             "throughput_mbps": total_bps / 1_000_000.0,
             "avg_client_mbps": (total_bps / 1_000_000.0) / len(metrics) if metrics else 0.0,
             "max_client_mbps": max((entry["throughput_bits_per_sec"] / 1_000_000.0 for entry in metrics), default=0.0),
+            "min_client_mbps": min((entry["throughput_bits_per_sec"] / 1_000_000.0 for entry in metrics), default=0.0),
             "retransmits": sum(entry["retransmits"] for entry in metrics),
             "jitter_ms": max((entry["jitter_ms"] for entry in metrics), default=0.0),
             "lost_percent": max((entry["lost_percent"] for entry in metrics), default=0.0),
             "success_rate": 1.0,
+            "client_details": client_details,
         }
         rows.append(row)
         for port in ports:
@@ -539,10 +557,10 @@ def _run_ring(
             _kill_matching(identity_file, ssh_user, dest_ip, f"iperf3 -s -p {port}")
             _start_background(identity_file, ssh_user, dest_ip, _iperf_server_command(port, protocol))
             _wait_for_tcp(identity_file, ssh_user, dest_ip, port)
-        metrics = []
         case_id = str(case["case_id"])
         _log(f"ring case start case_id={case_id}")
-        for flow in flows:
+
+        def _run_flow(flow: dict[str, object]) -> dict[str, object]:
             source_ip = str(flow["source"]["fixed_ip"])
             command = _iperf_client_command(
                 str(flow["dest"]["fixed_ip"]),
@@ -575,12 +593,30 @@ def _run_ring(
             metric = _parse_iperf_json(result.stdout, protocol)
             metric["source"] = flow["source"]["name"]
             metric["dest"] = flow["dest"]["name"]
-            metrics.append(metric)
+            return metric
+
+        with ThreadPoolExecutor(max_workers=len(flows)) as pool:
+            futures = [pool.submit(_run_flow, f) for f in flows]
+            metrics = [f.result() for f in futures]
         total_bps = sum(entry["throughput_bits_per_sec"] for entry in metrics)
         node_totals: dict[str, float] = {}
         for metric in metrics:
             node_totals[str(metric["source"])] = node_totals.get(str(metric["source"]), 0.0) + float(metric["throughput_bits_per_sec"])
         node_values = sorted(node_totals.values())
+        name_to_host = {str(p["name"]): p.get("compute_host", "") for p in participants}
+        flow_details = [
+            {
+                "source": str(metric["source"]),
+                "source_compute_host": name_to_host.get(str(metric["source"]), ""),
+                "dest": str(metric["dest"]),
+                "dest_compute_host": name_to_host.get(str(metric["dest"]), ""),
+                "throughput_mbps": round(float(metric["throughput_bits_per_sec"]) / 1_000_000.0, 2),
+                "retransmits": float(metric["retransmits"]),
+                "jitter_ms": round(float(metric["jitter_ms"]), 2),
+                "lost_percent": round(float(metric["lost_percent"]), 2),
+            }
+            for metric in metrics
+        ]
         row = {
             "case_id": case_id,
             "mode": "ring",
@@ -595,10 +631,12 @@ def _run_ring(
             "throughput_mbps": total_bps / 1_000_000.0,
             "avg_flow_mbps": (total_bps / 1_000_000.0) / len(metrics) if metrics else 0.0,
             "max_flow_mbps": max((entry["throughput_bits_per_sec"] / 1_000_000.0 for entry in metrics), default=0.0),
+            "min_flow_mbps": min((entry["throughput_bits_per_sec"] / 1_000_000.0 for entry in metrics), default=0.0),
             "retransmits": sum(entry["retransmits"] for entry in metrics),
             "jitter_ms": max((entry["jitter_ms"] for entry in metrics), default=0.0),
             "lost_percent": max((entry["lost_percent"] for entry in metrics), default=0.0),
             "imbalance_ratio": (node_values[-1] / node_values[0]) if len(node_values) > 1 and node_values[0] else 1.0,
+            "flow_details": flow_details,
         }
         rows.append(row)
         for flow in flows:
@@ -635,14 +673,15 @@ def _write_markdown(output_dir: Path, scenario_slug: str, rows: list[dict[str, o
     if scenario_slug == "net-many-to-one":
         headers = [
             "Case", "Mode", "Protocol", "Clients", "Throughput (Mb/s)",
-            "Avg Client (Mb/s)", "Max Client (Mb/s)", "Retransmits",
-            "Jitter (ms)", "Lost %", "Success Rate",
+            "Avg Client (Mb/s)", "Max Client (Mb/s)", "Min Client (Mb/s)",
+            "Retransmits", "Jitter (ms)", "Lost %", "Success Rate",
         ]
         table_rows = [
             [
                 row["case_id"], row["mode"], row["protocol"],
                 row["client_count"], f"{row['throughput_mbps']:.2f}",
                 f"{row['avg_client_mbps']:.2f}", f"{row['max_client_mbps']:.2f}",
+                f"{row.get('min_client_mbps', 0.0):.2f}",
                 f"{row['retransmits']:.0f}", f"{row['jitter_ms']:.2f}",
                 f"{row['lost_percent']:.2f}", f"{row['success_rate']:.3f}",
             ]
@@ -651,14 +690,15 @@ def _write_markdown(output_dir: Path, scenario_slug: str, rows: list[dict[str, o
     else:
         headers = [
             "Case", "Protocol", "Participants", "Flows", "Throughput (Mb/s)",
-            "Avg Flow (Mb/s)", "Max Flow (Mb/s)", "Retransmits",
-            "Jitter (ms)", "Lost %", "Imbalance Ratio",
+            "Avg Flow (Mb/s)", "Max Flow (Mb/s)", "Min Flow (Mb/s)",
+            "Retransmits", "Jitter (ms)", "Lost %", "Imbalance Ratio",
         ]
         table_rows = [
             [
                 row["case_id"], row["protocol"], row["participant_count"],
                 row["flow_count"], f"{row['throughput_mbps']:.2f}",
                 f"{row['avg_flow_mbps']:.2f}", f"{row['max_flow_mbps']:.2f}",
+                f"{row.get('min_flow_mbps', 0.0):.2f}",
                 f"{row['retransmits']:.0f}", f"{row['jitter_ms']:.2f}",
                 f"{row['lost_percent']:.2f}", f"{row['imbalance_ratio']:.3f}",
             ]
@@ -666,14 +706,54 @@ def _write_markdown(output_dir: Path, scenario_slug: str, rows: list[dict[str, o
         ]
     lines = ["## Summary Table", ""]
     lines.extend(_format_markdown_table(headers, table_rows))
+    lines.append("")
+    for row in rows:
+        case_id = str(row["case_id"])
+        lines.extend([f"## {case_id}", ""])
+        if scenario_slug == "net-many-to-one":
+            client_details = row.get("client_details", [])
+            if client_details:
+                detail_headers = [
+                    "Client", "Compute Host", "Throughput (Mb/s)",
+                    "Retransmits", "Jitter (ms)", "Lost %",
+                ]
+                detail_rows = [
+                    [
+                        c["name"], c.get("compute_host", ""),
+                        f"{c['throughput_mbps']:.2f}", f"{c['retransmits']:.0f}",
+                        f"{c['jitter_ms']:.2f}", f"{c['lost_percent']:.2f}",
+                    ]
+                    for c in client_details
+                ]
+                lines.extend(_format_markdown_table(detail_headers, detail_rows))
+                lines.append("")
+        else:
+            flow_details = row.get("flow_details", [])
+            if flow_details:
+                detail_headers = [
+                    "Source", "Src Host", "Dest", "Dst Host",
+                    "Throughput (Mb/s)", "Retransmits", "Jitter (ms)", "Lost %",
+                ]
+                detail_rows = [
+                    [
+                        f["source"], f.get("source_compute_host", ""),
+                        f["dest"], f.get("dest_compute_host", ""),
+                        f"{f['throughput_mbps']:.2f}", f"{f['retransmits']:.0f}",
+                        f"{f['jitter_ms']:.2f}", f"{f['lost_percent']:.2f}",
+                    ]
+                    for f in flow_details
+                ]
+                lines.extend(_format_markdown_table(detail_headers, detail_rows))
+                lines.append("")
     (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _write_csv(output_dir: Path, rows: list[dict[str, object]]) -> None:
     if not rows:
         return
+    fieldnames = [k for k in rows[0].keys() if not isinstance(rows[0][k], (list, dict))]
     with (output_dir / "summary.csv").open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(stream, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 

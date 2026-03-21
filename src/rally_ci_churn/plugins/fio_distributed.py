@@ -707,6 +707,8 @@ class FioDistributedScenario(_FioDistributedBase):
                     iodepths,
                 ),
             }
+            for worker in workers:
+                worker["server"] = self.clients("nova").servers.get(worker["server"].id)
             inventory = self._inventory_payload(workers, fio_port, max_volumes_per_client)
             self._upload_controller_inputs(
                 ssh,

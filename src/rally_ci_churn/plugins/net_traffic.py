@@ -555,10 +555,24 @@ class NetManyToOneScenario(_NetTrafficBase):
             else:
                 matrix_cases.append({"case_id": "http-volume", "mode": "http_volume", "protocol": "http"})
 
+            server = self.clients("nova").servers.get(server.id)
+            for client in clients:
+                client["server"] = self.clients("nova").servers.get(client["server"].id)
             inventory = {
                 "ssh_user": ssh_user,
-                "server": {"name": server.name, "fixed_ip": self._fixed_ip(server)},
-                "clients": [{"name": client["name"], "fixed_ip": client["fixed_ip"]} for client in clients],
+                "server": {
+                    "name": server.name,
+                    "fixed_ip": self._fixed_ip(server),
+                    "compute_host": getattr(server, "OS-EXT-SRV-ATTR:host", ""),
+                },
+                "clients": [
+                    {
+                        "name": client["name"],
+                        "fixed_ip": client["fixed_ip"],
+                        "compute_host": getattr(client["server"], "OS-EXT-SRV-ATTR:host", ""),
+                    }
+                    for client in clients
+                ],
             }
             matrix = {
                 "scenario_slug": "net-many-to-one",
@@ -652,6 +666,7 @@ class NetManyToOneScenario(_NetTrafficBase):
                 row.get("throughput_mbps", ""),
                 row.get("avg_client_mbps", ""),
                 row.get("max_client_mbps", ""),
+                row.get("min_client_mbps", ""),
                 row.get("retransmits", ""),
                 row.get("jitter_ms", ""),
                 row.get("lost_percent", ""),
@@ -678,6 +693,7 @@ class NetManyToOneScenario(_NetTrafficBase):
                     "throughput_mbps",
                     "avg_client_mbps",
                     "max_client_mbps",
+                    "min_client_mbps",
                     "retransmits",
                     "jitter_ms",
                     "lost_percent",
@@ -848,9 +864,18 @@ class NetRingScenario(_NetTrafficBase):
                                 "udp_target_mbps": int(target),
                             }
                         )
+            for participant in participants:
+                participant["server"] = self.clients("nova").servers.get(participant["server"].id)
             inventory = {
                 "ssh_user": ssh_user,
-                "participants": [{"name": participant["name"], "fixed_ip": participant["fixed_ip"]} for participant in participants],
+                "participants": [
+                    {
+                        "name": participant["name"],
+                        "fixed_ip": participant["fixed_ip"],
+                        "compute_host": getattr(participant["server"], "OS-EXT-SRV-ATTR:host", ""),
+                    }
+                    for participant in participants
+                ],
             }
             matrix = {
                 "scenario_slug": "net-ring",
@@ -924,6 +949,7 @@ class NetRingScenario(_NetTrafficBase):
                 row.get("throughput_mbps", ""),
                 row.get("avg_flow_mbps", ""),
                 row.get("max_flow_mbps", ""),
+                row.get("min_flow_mbps", ""),
                 row.get("retransmits", ""),
                 row.get("jitter_ms", ""),
                 row.get("lost_percent", ""),
@@ -946,6 +972,7 @@ class NetRingScenario(_NetTrafficBase):
                     "throughput_mbps",
                     "avg_flow_mbps",
                     "max_flow_mbps",
+                    "min_flow_mbps",
                     "retransmits",
                     "jitter_ms",
                     "lost_percent",
